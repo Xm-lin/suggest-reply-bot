@@ -20,11 +20,24 @@ def run_dummy_server():
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
 # =========================================================
-# Discord Bot
+# Discord Bot & 跨情境 (私訊/使用者安裝) 設定
 # =========================================================
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# 允許在伺服器、機器人私訊 (DM) 及私人群組使用
+allowed_contexts = app_commands.AppCommandContext(
+    guild=True,          
+    dm_channel=True,     
+    private_channel=True 
+)
+
+# 允許伺服器安裝與使用者個人帳號安裝
+allowed_installs = app_commands.AppInstallationType(
+    guild=True, 
+    user=True   
+)
 
 @bot.event
 async def on_ready():
@@ -39,7 +52,12 @@ async def on_ready():
 # =========================================================
 # /set_key
 # =========================================================
-@bot.tree.command(name="set_key", description="設定並儲存你的 Gemini API Key")
+@bot.tree.command(
+    name="set_key", 
+    description="設定並儲存你的 Gemini API Key",
+    contexts=allowed_contexts,
+    installs=allowed_installs
+)
 @app_commands.describe(api_key="輸入你的 Google Gemini API Key")
 async def set_key(interaction: discord.Interaction, api_key: str):
     api_key = api_key.strip()
@@ -64,7 +82,12 @@ async def set_key(interaction: discord.Interaction, api_key: str):
 # =========================================================
 # /reply
 # =========================================================
-@bot.tree.command(name="reply", description="透過 Jev 兩階段分析生成極致自然的接話")
+@bot.tree.command(
+    name="reply", 
+    description="透過 Jev 兩階段分析生成極致自然的接話",
+    contexts=allowed_contexts,
+    installs=allowed_installs
+)
 @app_commands.describe(prompt="輸入對方說的話或話題")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
@@ -84,7 +107,11 @@ async def reply(interaction: discord.Interaction, prompt: str):
 # =========================================================
 # 右鍵選單：JARVIS 上下文分析建議回覆
 # =========================================================
-@app_commands.context_menu(name="JARVIS建議回覆")
+@app_commands.context_menu(
+    name="JARVIS建議回覆",
+    contexts=allowed_contexts,
+    installs=allowed_installs
+)
 async def jarvis_reply_context(interaction: discord.Interaction, message: discord.Message):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
@@ -95,9 +122,13 @@ async def jarvis_reply_context(interaction: discord.Interaction, message: discor
 
     try:
         history_messages = []
-        async for msg in interaction.channel.history(limit=6, before=message.created_at, oldest_first=True):
-            if msg.content.strip():
-                history_messages.append(f"{msg.author.display_name}: {msg.content}")
+        # 私訊讀取歷史紀錄防護（若無法存取頻道歷史則降級回單條訊息）
+        try:
+            async for msg in interaction.channel.history(limit=6, before=message.created_at, oldest_first=True):
+                if msg.content.strip():
+                    history_messages.append(f"{msg.author.display_name}: {msg.content}")
+        except Exception:
+            pass
         
         history_messages.append(f"{message.author.display_name}: {message.content}")
         chat_context = "\n".join(history_messages)
