@@ -8,7 +8,7 @@ from discord.ext import commands
 from google import genai
 
 # =========================================================
-# 環境變數與設定（不再引用 config.py）
+# 環境變數與設定
 # =========================================================
 PORT = int(os.environ.get("PORT", 10000))
 DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
@@ -65,6 +65,19 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# 設定允許在伺服器、Bot 私訊、個人私訊中觸發指令
+allowed_contexts = app_commands.AppCommandContext(
+    guild=True,
+    dm_channel=True,
+    private_channel=True
+)
+
+# 設定允許安裝至伺服器與個人帳號
+allowed_installs = app_commands.AppInstallationType(
+    guild=True,
+    user=True
+)
+
 @bot.event
 async def on_ready():
     init_db()
@@ -79,6 +92,8 @@ async def on_ready():
 # /set_key
 # =========================================================
 @bot.tree.command(name="set_key", description="設定並儲存你的 Gemini API Key")
+@app_commands.allowed_contexts(allowed_contexts)
+@app_commands.allowed_installs(allowed_installs)
 @app_commands.describe(api_key="輸入你的 Google Gemini API Key")
 async def set_key(interaction: discord.Interaction, api_key: str):
     api_key = api_key.strip()
@@ -104,6 +119,8 @@ async def set_key(interaction: discord.Interaction, api_key: str):
 # /reply
 # =========================================================
 @bot.tree.command(name="reply", description="生成自然的接話建議")
+@app_commands.allowed_contexts(allowed_contexts)
+@app_commands.allowed_installs(allowed_installs)
 @app_commands.describe(prompt="輸入對方說的話或話題")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
@@ -128,6 +145,8 @@ async def reply(interaction: discord.Interaction, prompt: str):
 # 右鍵選單：建議回覆
 # =========================================================
 @bot.tree.context_menu(name="建議回覆")
+@app_commands.allowed_contexts(allowed_contexts)
+@app_commands.allowed_installs(allowed_installs)
 async def jarvis_reply_context(interaction: discord.Interaction, message: discord.Message):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
