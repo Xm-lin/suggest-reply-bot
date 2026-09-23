@@ -59,6 +59,7 @@ def get_api_key(user_id: int):
 # Discord Bot
 # =========================================================
 intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =========================================================
@@ -88,11 +89,7 @@ async def set_key(interaction: discord.Interaction, api_key: str):
     try:
         client = genai.Client(api_key=api_key)
         models = list(client.models.list())
-        generate_models = []
-        for model in models:
-            supported_actions = getattr(model, "supported_actions", [])
-            if "generateContent" in supported_actions:
-                generate_models.append(model.name)
+        generate_models = [m.name for m in models if "generateContent" in getattr(m, "supported_actions", [])]
 
         if not generate_models:
             await interaction.response.send_message("❌ 這個 API Key 沒有可用的 Gemini 文字生成模型。", ephemeral=True)
@@ -100,17 +97,14 @@ async def set_key(interaction: discord.Interaction, api_key: str):
 
         save_api_key(interaction.user.id, api_key)
         await interaction.response.send_message("✅ API Key 已成功驗證並儲存！", ephemeral=True)
-        print(f"🔑 使用者 {interaction.user.id} 設定 API Key")
     except Exception as e:
         await interaction.response.send_message(f"❌ API Key 驗證失敗：\n`{str(e)[:1500]}`", ephemeral=True)
 
 # =========================================================
-# Gemini API
+# Gemini API Core Call
 # =========================================================
 def call_gemini_api(api_key: str, prompt: str) -> str:
     client = genai.Client(api_key=api_key)
-    
-    # 指定 gemini-3-flash，並設定備用預設模型清單
     candidate_models = ["gemini-3-flash", "gemini-3.6-flash", "gemini-flash-latest"]
     
     last_err = None
@@ -123,7 +117,6 @@ def call_gemini_api(api_key: str, prompt: str) -> str:
             last_err = e
             continue
 
-    # 若預設全數失敗，動態搜尋 Key 底下的可用 Flash 模型
     try:
         models = list(client.models.list())
         for model in models:
@@ -142,10 +135,28 @@ def call_gemini_api(api_key: str, prompt: str) -> str:
     raise Exception(f"無法存取 Gemini API：{last_err}")
 
 # =========================================================
+# 自然語言 Prompt 樣板
+# =========================================================
+NATURAL_PROMPT_TEMPLATE = """
+你是 18 歲的台灣年輕人，正躺在沙發上滑 Discord 跟朋友聊天。
+請根據對話紀錄，擬定你（使用者）準備傳送的下句接話內容。
+
+【語氣風格指南】
+1. 極度簡短：1~15 個字內解決，能用幾個字表達就絕不多寫。
+2. 真人隨意感：多用「欸、亂講、真的假、笑死、確實、好啊、無聊、還行」。
+3. 標點規範：禁止使用驚嘆號「！」，句尾不要加句號，盡量不使用 Emoji。
+4. 禁用 AI 罐頭詞：嚴禁「嗨嗨、很高興、超讚、當然、沒問題、很高興能為您提供服務」。
+5. 直接輸出：不換行，不要引號，不要做任何補充或解釋，直接給出傳送內容。
+
+對話情境：
+{context}
+"""
+
+# =========================================================
 # /reply
 # =========================================================
-@bot.tree.command(name="reply", description="生成 AI 建議回覆")
-@app_commands.describe(prompt="輸入訊息或對話背景")
+@bot.tree.command(name="reply", description="生成極致自然的接話回覆")
+@app_commands.describe(prompt="輸入對方說的話或話題")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
@@ -155,25 +166,18 @@ async def reply(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        full_prompt = f"""
-你是一個 Discord 回覆助手。
-請針對以下對話內容，提供一個自然、簡短、熱情的繁體中文回覆。
-不要過度正式，不要解釋你為什麼這樣回答，直接給出可以傳送的回覆。
-
-對話內容：
-{prompt}
-"""
+        full_prompt = NATURAL_PROMPT_TEMPLATE.format(context=f"對方說：{prompt}")
         reply_text = call_gemini_api(api_key, full_prompt)
-        await interaction.followup.send(f"💡 **AI 建議回覆：**\n{reply_text}", ephemeral=True)
+        await interaction.followup.send(f"💡 **建議回覆：** {reply_text}", ephemeral=True)
     except Exception as e:
         print(f"❌ /reply Gemini 錯誤：{e}")
         await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
 
 # =========================================================
-# 右鍵選單：AI建議回覆
+# 右鍵選單：JARVIS 上下文分析建議回覆
 # =========================================================
-@app_commands.context_menu(name="AI建議回覆")
-async def suggest_reply_context(interaction: discord.Interaction, message: discord.Message):
+@app_commands.context_menu(name="JARVIS建議回覆")
+async def jarvis_reply_context(interaction: discord.Interaction, message: discord.Message):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
         await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 Gemini API Key！", ephemeral=True)
@@ -182,24 +186,25 @@ async def suggest_reply_context(interaction: discord.Interaction, message: disco
     await interaction.response.defer(ephemeral=True)
 
     try:
-        full_prompt = f"""
-你是一個 Discord 回覆助手。
-請針對以下 Discord 訊息，提供一個自然、簡短、適當的繁體中文回覆。
-回覆不要太正式，不要加入多餘解釋，直接給出可以傳送的內容。
+        history_messages = []
+        async for msg in interaction.channel.history(limit=6, before=message.created_at, oldest_first=True):
+            if msg.content.strip():
+                history_messages.append(f"{msg.author.display_name}: {msg.content}")
+        
+        history_messages.append(f"{message.author.display_name}: {message.content}")
+        chat_context = "\n".join(history_messages)
 
-Discord 訊息：
-{message.content}
-"""
+        full_prompt = NATURAL_PROMPT_TEMPLATE.format(context=chat_context)
         reply_text = call_gemini_api(api_key, full_prompt)
-        await interaction.followup.send(f"💡 **AI 建議回覆：**\n{reply_text}", ephemeral=True)
+        await interaction.followup.send(f"💡 **建議回覆：** {reply_text}", ephemeral=True)
     except Exception as e:
-        print(f"❌ AI 建議回覆錯誤：{e}")
+        print(f"❌ JARVIS 建議回覆錯誤：{e}")
         await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
 
 # =========================================================
 # 啟動 Bot
 # =========================================================
-bot.tree.add_command(suggest_reply_context)
+bot.tree.add_command(jarvis_reply_context)
 
 if __name__ == "__main__":
     init_db()
