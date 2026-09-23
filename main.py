@@ -1,4 +1,4 @@
-````python
+
 import os
 import sqlite3
 import threading
@@ -291,4 +291,3 @@ if __name__ == "__main__":
     else:
         print("🚀 正在啟動 Discord Bot...")
         bot.run(DISCORD_TOKEN)
-````
