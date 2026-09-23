@@ -1,164 +1,118 @@
 import os
 import sqlite3
+import threading
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 import discord
 from discord import app_commands
 from discord.ext import commands
 from google import genai
 
-# ==========================================
-# 1. 資料庫初始化
-# ==========================================
-DB_FILE = "user_keys.db"
+# Gweinydd Web i baratoi Render Port Scanning
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    server.serve_forever()
 
+threading.Thread(target=run_dummy_server, daemon=True).start()
+
+# Setup Cronfa Data SQLite
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS user_keys (
-        user_id TEXT PRIMARY KEY,
-        api_key TEXT NOT NULL
-    )
+        CREATE TABLE IF NOT EXISTS api_keys (
+            user_id INTEGER PRIMARY KEY,
+            api_key TEXT NOT NULL
+        )
     """)
     conn.commit()
     conn.close()
 
-init_db()
-
-def get_user_key(user_id: int):
-    conn = sqlite3.connect(DB_FILE)
+def save_api_key(user_id: int, api_key: str):
+    conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT api_key FROM user_keys WHERE user_id = ?", (str(user_id),))
+    cursor.execute("""
+        INSERT INTO api_keys (user_id, api_key) 
+        VALUES (?, ?) 
+        ON CONFLICT(user_id) DO UPDATE SET api_key=excluded.api_key
+    """, (user_id, api_key))
+    conn.commit()
+    conn.close()
+
+def get_api_key(user_id: int):
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT api_key FROM api_keys WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
 
-def save_user_key(user_id: int, api_key: str):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO user_keys (user_id, api_key) VALUES (?, ?)", (str(user_id), api_key))
-    conn.commit()
-    conn.close()
-
-def delete_user_key(user_id: int):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM user_keys WHERE user_id = ?", (str(user_id),))
-    conn.commit()
-    conn.close()
-
-# ==========================================
-# 2. Discord Bot 與 AI 邏輯
-# ==========================================
+# Setup Bot Discord
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-def generate_ai_suggestions(api_key: str, text_content: str) -> list:
-    client = genai.Client(api_key=api_key)
-    prompt = f"""
-    分析這段訊息：「{text_content}」
-    請起草 3 個不同語氣（如：禮貌、簡短、幽默）的建議回覆草稿[span_0](start_span)[span_0](end_span)。
-    請格式化輸出，每行一個回覆，不要包含任何額外說明、標號或引號。
-    """
-    response = client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=prompt,
-    )
-    lines = [line.strip() for line in response.text.strip().split('\n') if line.strip()]
-    return lines[:3]
-
-class ReplyView(discord.ui.View):
-    def __init__(self, options: list):
-        super().__init__(timeout=60)
-        for option_text in options:
-            button = discord.ui.Button(label=option_text[:80], style=discord.ButtonStyle.primary)
-            button.callback = self.create_callback(option_text)
-            self.add_item(button)
-
-    def create_callback(self, text):
-        async def button_callback(interaction: discord.Interaction):
-            await interaction.channel.send(text)
-            await interaction.response.send_message("已成功發送！", ephemeral=True)
-            self.stop()
-        return button_callback
-
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
-    print(f"✅ 機器人 {bot.user} 已成功上線並同步指令！")
+    init_db()
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Prewylio bot {bot.user} wedi syncio {len(synced)} gorchymyn!")
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
 
-# ==========================================
-# 3. 指令設定
-# ==========================================
-@bot.tree.command(name="set_key", description="綁定你的 Gemini API Key（訊息只有你看得到）")
-@app_commands.describe(api_key="請貼上你在 Google AI Studio 申請的免費 API Key")
+# Gorchymyn /set_key
+@bot.tree.command(name="set_key", description="Cadw dy Gemini API Key eich hun")
+@app_commands.describe(api_key="Eich Google Gemini API Key")
 async def set_key(interaction: discord.Interaction, api_key: str):
-    save_user_key(interaction.user.id, api_key.strip())
-    await interaction.response.send_message(
-        "✅ **API Key 設定成功！**\n現在你可以使用 `/reply` 或右鍵選單 `AI建議回覆` 功能了[span_1](start_span)[span_1](end_span)。",
-        ephemeral=True
-    )
+    save_api_key(interaction.user.id, api_key.strip())
+    await interaction.response.send_message("✅ API Key wedi'i gadw'n lwyddiannus!", ephemeral=True)
 
-@bot.tree.command(name="clear_key", description="刪除你的 API Key")
-async def clear_key(interaction: discord.Interaction):
-    delete_user_key(interaction.user.id)
-    await interaction.response.send_message("🗑️ **API Key 已刪除！**", ephemeral=True)
-
-# 方式 A：/reply
-@bot.tree.command(name="reply", description="分析文字並提供 3 個建議回覆")
-@app_commands.describe(text="請輸入你想回覆的內容")
-async def reply_slash(interaction: discord.Interaction, text: str):
-    user_key = get_user_key(interaction.user.id)
-    if not user_key:
-        await interaction.response.send_message(
-            "⚠️ **請先設定 API Key！**\n請使用 `/set_key [你的 Key]` 進行綁定（前往 https://aistudio.google.com/ 免費申請）。",
-            ephemeral=True
-        )
+# Gorchymyn /reply
+@bot.tree.command(name="reply", description="Ateb a awgrymir gan AI")
+@app_commands.describe(prompt="Nodwch y neges neu'r cyd-destun")
+async def reply(interaction: discord.Interaction, prompt: str):
+    api_key = get_api_key(interaction.user.id)
+    if not api_key:
+        await interaction.response.send_message("❌ Mynediad wedi'i wrthod! Defnyddiwch `/set_key` gyntaf.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
-    try:
-        suggestions = generate_ai_suggestions(user_key, text)
-        if suggestions:
-            view = ReplyView(suggestions)
-            await interaction.followup.send(
-                content=f"🤖 **針對此文字的建議回覆：**\n> {text}",
-                view=view,
-                ephemeral=True[span_2](start_span)[span_2](end_span)
-            )
-    except Exception as e:
-        await interaction.followup.send(f"生成失敗，請檢查 API Key 是否正確：{e}", ephemeral=True)
 
-# 方式 B：右鍵選單 App
-@bot.tree.context_menu(name="AI建議回覆")
-async def reply_context_menu(interaction: discord.Interaction, message: discord.Message):
-    user_key = get_user_key(interaction.user.id)
-    if not user_key:
-        await interaction.response.send_message(
-            "⚠️ **請先設定 API Key！**\n請使用 `/set_key [你的 Key]` 進行綁定（前往 https://aistudio.google.com/ 免費申請）。",
-            ephemeral=True
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=f"Awgryrwch ateb Discord byr ar gyfer hyn: {prompt}"
         )
+        await interaction.followup.send(f"💡 **Awgrym Ateb:**\n{response.text}", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"⚠️ Error: {str(e)}", ephemeral=True)
+
+# Gorchymyn Devis Context Menu: AI Suggest Reply
+@app_commands.context_menu(name="AI建議回覆")
+async def suggest_reply_context(interaction: discord.Interaction, message: discord.Message):
+    api_key = get_api_key(interaction.user.id)
+    if not api_key:
+        await interaction.response.send_message("❌ Defnyddiwch `/set_key` i gadw API key gyntaf.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
-    target_text = message.content
-    if not target_text:
-        await interaction.followup.send("這則訊息沒有包含可讀取的文字內容！", ephemeral=True)
-        return
 
     try:
-        suggestions = generate_ai_suggestions(user_key, target_text)
-        if suggestions:
-            view = ReplyView(suggestions)
-            await interaction.followup.send(
-                content=f"🤖 **針對 `{message.author.name}` 的訊息建議回覆：**\n> {target_text}",
-                view=view,
-                ephemeral=True[span_3](start_span)[span_3](end_span)
-            )
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=f"Atebwch y neges hon yn Discord: {message.content}"
+        )
+        await interaction.followup.send(f"💡 **Awgrym Ateb:**\n{response.text}", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"生成失敗，請檢查 API Key 是否正確：{e}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ Error: {str(e)}", ephemeral=True)
 
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-if TOKEN:
-    bot.run(TOKEN)
+bot.tree.add_command(suggest_reply_context)
+
+# Dechrau'r bot
+token = os.environ.get("DISCORD_BOT_TOKEN")
+if token:
+    bot.run(token)
 else:
-    print("錯誤：找不到 DISCORD_BOT_TOKEN 環境變數！")
+    print("❌ DISCORD_BOT_TOKEN missing!")
