@@ -7,17 +7,24 @@ from discord import app_commands
 from discord.ext import commands
 from google import genai
 
-# 騙 Render 的 Dummy 伺服器，解決 Port Binding 問題
+# =========================================================
+# Render Port Dummy Server
+# =========================================================
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    print(f"🌐 Dummy server running on port {port}")
     server.serve_forever()
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-# 初始化 SQLite 資料庫
+# =========================================================
+# SQLite Database
+# =========================================================
+DB_FILE = "users.db"
+
 def init_db():
-    conn = sqlite3.connect("users.db")
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS api_keys (
@@ -29,105 +36,175 @@ def init_db():
     conn.close()
 
 def save_api_key(user_id: int, api_key: str):
-    conn = sqlite3.connect("users.db")
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO api_keys (user_id, api_key) 
         VALUES (?, ?) 
-        ON CONFLICT(user_id) DO UPDATE SET api_key=excluded.api_key
+        ON CONFLICT(user_id) 
+        DO UPDATE SET api_key=excluded.api_key
     """, (user_id, api_key))
     conn.commit()
     conn.close()
 
 def get_api_key(user_id: int):
-    conn = sqlite3.connect("users.db")
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT api_key FROM api_keys WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
 
-# 初始化 Discord 機器人
+# =========================================================
+# Discord Bot
+# =========================================================
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# =========================================================
+# Bot Ready
+# =========================================================
 @bot.event
 async def on_ready():
     init_db()
     try:
         synced = await bot.tree.sync()
-        print(f"✅ 機器人 {bot.user} 已成功同步 {len(synced)} 個指令！")
+        print(f"✅ 機器人 {bot.user} 已成功登入！")
+        print(f"✅ 已同步 {len(synced)} 個 Discord 指令")
     except Exception as e:
-        print(f"同步指令錯誤: {e}")
+        print(f"❌ 同步 Discord 指令錯誤：{e}")
 
-# 斜線指令 /set_key
+# =========================================================
+# /set_key
+# =========================================================
 @bot.tree.command(name="set_key", description="設定並儲存你的 Gemini API Key")
 @app_commands.describe(api_key="輸入你的 Google Gemini API Key")
 async def set_key(interaction: discord.Interaction, api_key: str):
-    save_api_key(interaction.user.id, api_key.strip())
-    await interaction.response.send_message("✅ API Key 已成功儲存！", ephemeral=True)
+    api_key = api_key.strip()
+    if not api_key:
+        await interaction.response.send_message("❌ API Key 不能是空白。", ephemeral=True)
+        return
 
-# 呼叫 Gemini 的通用函式（含自動容錯降級）
+    try:
+        # 先測試 API Key 是否可以建立 Gemini Client
+        client = genai.Client(api_key=api_key)
+        # 實際測試可用模型
+        models = list(client.models.list())
+        generate_models = []
+        for model in models:
+            supported_actions = getattr(model, "supported_actions", [])
+            if "generateContent" in supported_actions:
+                generate_models.append(model.name)
+
+        if not generate_models:
+            await interaction.response.send_message("❌ 這個 API Key 沒有可用的 Gemini 文字生成模型。", ephemeral=True)
+            return
+
+        # 儲存 API Key
+        save_api_key(interaction.user.id, api_key)
+        await interaction.response.send_message("✅ API Key 已成功驗證並儲存！", ephemeral=True)
+        print(f"🔑 使用者 {interaction.user.id} 設定 API Key")
+        print(f"📋 可用模型數量：{len(generate_models)}")
+    except Exception as e:
+        await interaction.response.send_message(f"❌ API Key 驗證失敗：\n`{str(e)[:1500]}`", ephemeral=True)
+
+# =========================================================
+# Gemini API
+# =========================================================
 def call_gemini_api(api_key: str, prompt: str) -> str:
     client = genai.Client(api_key=api_key)
-    # 按照官方支援的模型名稱與別名順序嘗試
-    candidate_models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-1.5-flash"]
     
-    last_exception = None
-    for model_name in candidate_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
-            return response.text
-        except Exception as e:
-            last_exception = e
-            continue
-            
-    if last_exception:
-        raise last_exception
+    # 動態獲取該 Key 能用的模型清單
+    try:
+        models = list(client.models.list())
+        available_models = []
+        for model in models:
+            supported_actions = getattr(model, "supported_actions", [])
+            if "generateContent" in supported_actions:
+                available_models.append(model.name)
 
-# 斜線指令 /reply
+        if not available_models:
+            raise Exception("API Key 沒有可用的 generateContent 模型。")
+
+        # 優先選擇含 flash 的模型
+        flash_models = [m for m in available_models if "flash" in m.lower()]
+        target_model = flash_models[0] if flash_models else available_models[0]
+
+        response = client.models.generate_content(
+            model=target_model,
+            contents=prompt
+        )
+        if not response.text:
+            raise Exception("Gemini 沒有回傳文字內容。")
+        return response.text.strip()
+    except Exception as e:
+        raise Exception(f"Gemini API 呼叫失敗：{e}")
+
+# =========================================================
+# /reply
+# =========================================================
 @bot.tree.command(name="reply", description="生成 AI 建議回覆")
 @app_commands.describe(prompt="輸入訊息或對話背景")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
-        await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 API Key！", ephemeral=True)
+        await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 Gemini API Key！", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
 
     try:
-        full_prompt = f"請針對以下對話內容，提供簡短且熱情的 Discord 繁體中文建議回覆：{prompt}"
+        full_prompt = f"""
+你是一個 Discord 回覆助手。
+請針對以下對話內容，提供一個自然、簡短、熱情的繁體中文回覆。
+不要過度正式，不要解釋你為什麼這樣回答，直接給出可以傳送的回覆。
+
+對話內容：
+{prompt}
+"""
         reply_text = call_gemini_api(api_key, full_prompt)
         await interaction.followup.send(f"💡 **AI 建議回覆：**\n{reply_text}", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ 發生錯誤: {str(e)}", ephemeral=True)
+        print(f"❌ /reply Gemini 錯誤：{e}")
+        await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
 
+# =========================================================
 # 右鍵選單：AI建議回覆
+# =========================================================
 @app_commands.context_menu(name="AI建議回覆")
 async def suggest_reply_context(interaction: discord.Interaction, message: discord.Message):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
-        await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 API Key！", ephemeral=True)
+        await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 Gemini API Key！", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
 
     try:
-        full_prompt = f"請針對這條 Discord 訊息，提供簡短且適當的回覆建議：{message.content}"
+        full_prompt = f"""
+你是一個 Discord 回覆助手。
+請針對以下 Discord 訊息，提供一個自然、簡短、適當的繁體中文回覆。
+回覆不要太正式，不要加入多餘解釋，直接給出可以傳送的內容。
+
+Discord 訊息：
+{message.content}
+"""
         reply_text = call_gemini_api(api_key, full_prompt)
         await interaction.followup.send(f"💡 **AI 建議回覆：**\n{reply_text}", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ 發生錯誤: {str(e)}", ephemeral=True)
+        print(f"❌ AI 建議回覆錯誤：{e}")
+        await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
 
+# =========================================================
+# 啟動 Bot
+# =========================================================
 bot.tree.add_command(suggest_reply_context)
 
-# 啟動機器人
-token = os.environ.get("DISCORD_BOT_TOKEN")
-if token:
-    bot.run(token)
-else:
-    print("❌ 找不到 DISCORD_BOT_TOKEN 環境變數！")
+if __name__ == "__main__":
+    init_db()
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if not token:
+        print("❌ 找不到 DISCORD_BOT_TOKEN 環境變數！")
+    else:
+        print("🚀 正在啟動 Discord Bot...")
+        bot.run(token)
