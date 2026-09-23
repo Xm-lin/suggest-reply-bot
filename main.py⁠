@@ -1,8 +1,7 @@
-from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 import discord
 from discord import app_commands
-from discord.ext import commands
 from google import genai
 
 from config import DISCORD_TOKEN, PORT
@@ -21,27 +20,14 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-
 # =========================================================
-# 自訂 Bot 類別（確保指令先定義、後同步）
+# Discord Bot
 # =========================================================
-class CustomBot(commands.Bot):
+intents = discord.Intents.default()
+intents.message_content = True
 
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        super().__init__(command_prefix="!", intents=intents)
-
-    async def setup_hook(self):
-        # 於系統準備階段執行全域同步（此時所有 @bot.tree 指令已載入）
-        try:
-            synced = await self.tree.sync()
-            print(f"✅ 已成功全域同步 {len(synced)} 個 Discord 指令！")
-        except Exception as e:
-            print(f"❌ 同步 Discord 指令錯誤：{e}")
-
-
-bot = CustomBot()
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 
 # 定義允許的使用情境與安裝類型
 allowed_contexts = app_commands.AppCommandContext(
@@ -51,16 +37,22 @@ allowed_contexts = app_commands.AppCommandContext(
 allowed_installs = app_commands.AppInstallationType(guild=True, user=True)
 
 
-@bot.event
+@client.event
 async def on_ready():
     init_db()
-    print(f"✅ 機器人 {bot.user} 已成功登入！")
+    try:
+        # 強制進行全域指令覆蓋同步
+        synced = await tree.sync()
+        print(f"✅ 機器人 {client.user} 已成功登入！")
+        print(f"✅ 已成功全域同步 {len(synced)} 個 Discord 指令！")
+    except Exception as e:
+        print(f"❌ 同步 Discord 指令錯誤：{e}")
 
 
 # =========================================================
 # /set_key
 # =========================================================
-@bot.tree.command(name="set_key", description="儲存並驗證你的 Gemini API Key")
+@tree.command(name="set_key", description="儲存並驗證你的 Gemini API Key")
 @app_commands.allowed_contexts(allowed_contexts)
 @app_commands.allowed_installs(allowed_installs)
 @app_commands.describe(api_key="請輸入你的 Google Gemini API Key")
@@ -73,8 +65,8 @@ async def set_key(interaction: discord.Interaction, api_key: str):
         return
 
     try:
-        client = genai.Client(api_key=api_key)
-        models = list(client.models.list())
+        genai_client = genai.Client(api_key=api_key)
+        models = list(genai_client.models.list())
         generate_models = [
             m.name
             for m in models
@@ -101,7 +93,7 @@ async def set_key(interaction: discord.Interaction, api_key: str):
 # =========================================================
 # /reply
 # =========================================================
-@bot.tree.command(
+@tree.command(
     name="reply", description="分析對話內容並生成自然順暢的接話建議"
 )
 @app_commands.allowed_contexts(allowed_contexts)
@@ -132,7 +124,7 @@ async def reply(interaction: discord.Interaction, prompt: str):
 # =========================================================
 # 右鍵選單：JARVIS 上下文分析建議回覆
 # =========================================================
-@app_commands.context_menu(name="JARVIS建議回覆")
+@tree.context_menu(name="JARVIS建議回覆")
 @app_commands.allowed_contexts(allowed_contexts)
 @app_commands.allowed_installs(allowed_installs)
 async def jarvis_reply_context(
@@ -149,7 +141,6 @@ async def jarvis_reply_context(
 
     try:
         history_messages = []
-        # 安全讀取歷史紀錄（在私訊中如果失敗則自動降級僅讀取單條訊息）
         if interaction.channel and hasattr(interaction.channel, "history"):
             try:
                 async for msg in interaction.channel.history(
@@ -178,12 +169,10 @@ async def jarvis_reply_context(
         )
 
 
-# ⚠️ 已移除多餘的 bot.tree.add_command(jarvis_reply_context)
-
 if __name__ == "__main__":
     init_db()
     if not DISCORD_TOKEN:
         print("❌ 找不到 DISCORD_BOT_TOKEN 環境變數！")
     else:
         print("🚀 正在啟動 Discord Bot...")
-        bot.run(DISCORD_TOKEN)
+        client.run(DISCORD_TOKEN)
