@@ -67,6 +67,22 @@ async def set_key(interaction: discord.Interaction, api_key: str):
     save_api_key(interaction.user.id, api_key.strip())
     await interaction.response.send_message("✅ API Key 已成功儲存！", ephemeral=True)
 
+# 呼叫 Gemini 的通用函式
+def call_gemini_api(api_key: str, prompt: str) -> str:
+    client = genai.Client(api_key=api_key)
+    # 優先使用 gemini-2.5-flash，若有問題則降級嘗試 gemini-2.0-flash
+    for model_name in ["gemini-2.5-flash", "gemini-2.0-flash"]:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            last_exception = e
+            continue
+    raise last_exception
+
 # 斜線指令 /reply
 @bot.tree.command(name="reply", description="生成 AI 建議回覆")
 @app_commands.describe(prompt="輸入訊息或對話背景")
@@ -79,12 +95,9 @@ async def reply(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=f"請針對以下對話內容，提供簡短且熱情的 Discord 繁體中文建議回覆：{prompt}"
-        )
-        await interaction.followup.send(f"💡 **AI 建議回覆：**\n{response.text}", ephemeral=True)
+        full_prompt = f"請針對以下對話內容，提供簡短且熱情的 Discord 繁體中文建議回覆：{prompt}"
+        reply_text = call_gemini_api(api_key, full_prompt)
+        await interaction.followup.send(f"💡 **AI 建議回覆：**\n{reply_text}", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"⚠️ 發生錯誤: {str(e)}", ephemeral=True)
 
@@ -99,12 +112,9 @@ async def suggest_reply_context(interaction: discord.Interaction, message: disco
     await interaction.response.defer(ephemeral=True)
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=f"請針對這條 Discord 訊息，提供簡短且適當的回覆建議：{message.content}"
-        )
-        await interaction.followup.send(f"💡 **AI 建議回覆：**\n{response.text}", ephemeral=True)
+        full_prompt = f"請針對這條 Discord 訊息，提供簡短且適當的回覆建議：{message.content}"
+        reply_text = call_gemini_api(api_key, full_prompt)
+        await interaction.followup.send(f"💡 **AI 建議回覆：**\n{reply_text}", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"⚠️ 發生錯誤: {str(e)}", ephemeral=True)
 
