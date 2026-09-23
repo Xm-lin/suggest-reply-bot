@@ -70,8 +70,8 @@ async def set_key(interaction: discord.Interaction, api_key: str):
 # 呼叫 Gemini 的通用函式
 def call_gemini_api(api_key: str, prompt: str) -> str:
     client = genai.Client(api_key=api_key)
-    # 優先使用 gemini-2.5-flash，若有問題則降級嘗試 gemini-2.0-flash
-    for model_name in ["gemini-2.5-flash", "gemini-2.0-flash"]:
+    # 優先使用 API 指定要求的 gemini-3.6-flash
+    for model_name in ["gemini-3.6-flash", "gemini-1.5-flash-8b"]:
         try:
             response = client.models.generate_content(
                 model=model_name,
