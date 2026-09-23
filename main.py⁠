@@ -86,9 +86,7 @@ async def set_key(interaction: discord.Interaction, api_key: str):
         return
 
     try:
-        # 先測試 API Key 是否可以建立 Gemini Client
         client = genai.Client(api_key=api_key)
-        # 實際測試可用模型
         models = list(client.models.list())
         generate_models = []
         for model in models:
@@ -100,11 +98,9 @@ async def set_key(interaction: discord.Interaction, api_key: str):
             await interaction.response.send_message("❌ 這個 API Key 沒有可用的 Gemini 文字生成模型。", ephemeral=True)
             return
 
-        # 儲存 API Key
         save_api_key(interaction.user.id, api_key)
         await interaction.response.send_message("✅ API Key 已成功驗證並儲存！", ephemeral=True)
         print(f"🔑 使用者 {interaction.user.id} 設定 API Key")
-        print(f"📋 可用模型數量：{len(generate_models)}")
     except Exception as e:
         await interaction.response.send_message(f"❌ API Key 驗證失敗：\n`{str(e)[:1500]}`", ephemeral=True)
 
@@ -114,31 +110,36 @@ async def set_key(interaction: discord.Interaction, api_key: str):
 def call_gemini_api(api_key: str, prompt: str) -> str:
     client = genai.Client(api_key=api_key)
     
-    # 動態獲取該 Key 能用的模型清單
+    # 指定 gemini-3-flash，並設定備用預設模型清單
+    candidate_models = ["gemini-3-flash", "gemini-3.6-flash", "gemini-flash-latest"]
+    
+    last_err = None
+    for m in candidate_models:
+        try:
+            res = client.models.generate_content(model=m, contents=prompt)
+            if res.text:
+                return res.text.strip()
+        except Exception as e:
+            last_err = e
+            continue
+
+    # 若預設全數失敗，動態搜尋 Key 底下的可用 Flash 模型
     try:
         models = list(client.models.list())
-        available_models = []
         for model in models:
+            m_name = getattr(model, "name", "")
             supported_actions = getattr(model, "supported_actions", [])
-            if "generateContent" in supported_actions:
-                available_models.append(model.name)
+            if "generateContent" in supported_actions and "flash" in m_name.lower():
+                try:
+                    res = client.models.generate_content(model=m_name, contents=prompt)
+                    if res.text:
+                        return res.text.strip()
+                except Exception:
+                    continue
+    except Exception:
+        pass
 
-        if not available_models:
-            raise Exception("API Key 沒有可用的 generateContent 模型。")
-
-        # 優先選擇含 flash 的模型
-        flash_models = [m for m in available_models if "flash" in m.lower()]
-        target_model = flash_models[0] if flash_models else available_models[0]
-
-        response = client.models.generate_content(
-            model=target_model,
-            contents=prompt
-        )
-        if not response.text:
-            raise Exception("Gemini 沒有回傳文字內容。")
-        return response.text.strip()
-    except Exception as e:
-        raise Exception(f"Gemini API 呼叫失敗：{e}")
+    raise Exception(f"無法存取 Gemini API：{last_err}")
 
 # =========================================================
 # /reply
