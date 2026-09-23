@@ -1,13 +1,14 @@
-import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+import threading
 import discord
 from discord import app_commands
 from discord.ext import commands
 from google import genai
 
-from config import PORT, DISCORD_TOKEN
-from database import init_db, save_api_key, get_api_key
+from config import DISCORD_TOKEN, PORT
+from database import get_api_key, init_db, save_api_key
 from jev_pipeline import run_jev_two_stage_pipeline
+
 
 # =========================================================
 # Render Port Dummy Server
@@ -17,85 +18,116 @@ def run_dummy_server():
     print(f"🌐 Dummy server running on port {PORT}")
     server.serve_forever()
 
+
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
+
 # =========================================================
-# Discord Bot
+# 自訂 Bot 類別（確保指令先定義、後同步）
 # =========================================================
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+class CustomBot(commands.Bot):
+
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(command_prefix="!", intents=intents)
+
+    async def setup_hook(self):
+        # 於系統準備階段執行全域同步（此時所有 @bot.tree 指令已載入）
+        try:
+            synced = await self.tree.sync()
+            print(f"✅ 已成功全域同步 {len(synced)} 個 Discord 指令！")
+        except Exception as e:
+            print(f"❌ 同步 Discord 指令錯誤：{e}")
+
+
+bot = CustomBot()
 
 # 定義允許的使用情境與安裝類型
 allowed_contexts = app_commands.AppCommandContext(
-    guild=True,          
-    dm_channel=True,     
-    private_channel=True 
+    guild=True, dm_channel=True, private_channel=True
 )
 
-allowed_installs = app_commands.AppInstallationType(
-    guild=True, 
-    user=True   
-)
+allowed_installs = app_commands.AppInstallationType(guild=True, user=True)
+
 
 @bot.event
 async def on_ready():
     init_db()
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ 機器人 {bot.user} 已成功登入！")
-        print(f"✅ 已同步 {len(synced)} 個 Discord 指令")
-    except Exception as e:
-        print(f"❌ 同步 Discord 指令錯誤：{e}")
+    print(f"✅ 機器人 {bot.user} 已成功登入！")
+
 
 # =========================================================
 # /set_key
 # =========================================================
-@bot.tree.command(name="set_key", description="設定並儲存你的 Gemini API Key")
+@bot.tree.command(name="set_key", description="儲存並驗證你的 Gemini API Key")
 @app_commands.allowed_contexts(allowed_contexts)
 @app_commands.allowed_installs(allowed_installs)
-@app_commands.describe(api_key="輸入你的 Google Gemini API Key")
+@app_commands.describe(api_key="請輸入你的 Google Gemini API Key")
 async def set_key(interaction: discord.Interaction, api_key: str):
     api_key = api_key.strip()
     if not api_key:
-        await interaction.response.send_message("❌ API Key 不能是空白。", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ API Key 不能是空白。", ephemeral=True
+        )
         return
 
     try:
         client = genai.Client(api_key=api_key)
         models = list(client.models.list())
-        generate_models = [m.name for m in models if "generateContent" in getattr(m, "supported_actions", [])]
+        generate_models = [
+            m.name
+            for m in models
+            if "generateContent" in getattr(m, "supported_actions", [])
+        ]
 
         if not generate_models:
-            await interaction.response.send_message("❌ 這個 API Key 沒有可用的 Gemini 文字生成模型。", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ 這個 API Key 沒有可用的 Gemini 文字生成模型。",
+                ephemeral=True,
+            )
             return
 
         save_api_key(interaction.user.id, api_key)
-        await interaction.response.send_message("✅ API Key 已成功驗證並儲存！", ephemeral=True)
+        await interaction.response.send_message(
+            "✅ API Key 已成功驗證並儲存！", ephemeral=True
+        )
     except Exception as e:
-        await interaction.response.send_message(f"❌ API Key 驗證失敗：\n`{str(e)[:1500]}`", ephemeral=True)
+        await interaction.response.send_message(
+            f"❌ API Key 驗證失敗：\n`{str(e)[:1500]}`", ephemeral=True
+        )
+
 
 # =========================================================
 # /reply
 # =========================================================
-@bot.tree.command(name="reply", description="透過 Jev 兩階段分析生成極致自然的接話")
+@bot.tree.command(
+    name="reply", description="分析對話內容並生成自然順暢的接話建議"
+)
 @app_commands.allowed_contexts(allowed_contexts)
 @app_commands.allowed_installs(allowed_installs)
-@app_commands.describe(prompt="輸入對方說的話或話題")
+@app_commands.describe(prompt="輸入對方說的話或想聊的話題")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
-        await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 Gemini API Key！", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ 請先使用 `/set_key` 設定你的 Gemini API Key！", ephemeral=True
+        )
         return
 
     await interaction.response.defer(ephemeral=True)
 
     try:
         reply_text = run_jev_two_stage_pipeline(api_key, f"對方說：{prompt}")
-        await interaction.followup.send(f"💡 **建議回覆：** {reply_text}", ephemeral=True)
+        await interaction.followup.send(
+            f"💡 **建議回覆：** {reply_text}", ephemeral=True
+        )
     except Exception as e:
         print(f"❌ /reply Gemini 錯誤：{e}")
-        await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
+        await interaction.followup.send(
+            f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True
+        )
+
 
 # =========================================================
 # 右鍵選單：JARVIS 上下文分析建議回覆
@@ -103,34 +135,50 @@ async def reply(interaction: discord.Interaction, prompt: str):
 @app_commands.context_menu(name="JARVIS建議回覆")
 @app_commands.allowed_contexts(allowed_contexts)
 @app_commands.allowed_installs(allowed_installs)
-async def jarvis_reply_context(interaction: discord.Interaction, message: discord.Message):
+async def jarvis_reply_context(
+    interaction: discord.Interaction, message: discord.Message
+):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
-        await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 Gemini API Key！", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ 請先使用 `/set_key` 設定你的 Gemini API Key！", ephemeral=True
+        )
         return
 
     await interaction.response.defer(ephemeral=True)
 
     try:
         history_messages = []
-        try:
-            async for msg in interaction.channel.history(limit=6, before=message.created_at, oldest_first=True):
-                if msg.content.strip():
-                    history_messages.append(f"{msg.author.display_name}: {msg.content}")
-        except Exception:
-            pass
-        
-        history_messages.append(f"{message.author.display_name}: {message.content}")
+        # 安全讀取歷史紀錄（在私訊中如果失敗則自動降級僅讀取單條訊息）
+        if interaction.channel and hasattr(interaction.channel, "history"):
+            try:
+                async for msg in interaction.channel.history(
+                    limit=6, before=message.created_at, oldest_first=True
+                ):
+                    if msg.content.strip():
+                        history_messages.append(
+                            f"{msg.author.display_name}: {msg.content}"
+                        )
+            except Exception:
+                pass
+
+        history_messages.append(
+            f"{message.author.display_name}: {message.content}"
+        )
         chat_context = "\n".join(history_messages)
 
         reply_text = run_jev_two_stage_pipeline(api_key, chat_context)
-        await interaction.followup.send(f"💡 **建議回覆：** {reply_text}", ephemeral=True)
+        await interaction.followup.send(
+            f"💡 **建議回覆：** {reply_text}", ephemeral=True
+        )
     except Exception as e:
         print(f"❌ JARVIS 建議回覆錯誤：{e}")
-        await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
+        await interaction.followup.send(
+            f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True
+        )
 
-# 註冊 Context Menu 指令
-bot.tree.add_command(jarvis_reply_context)
+
+# ⚠️ 已移除多餘的 bot.tree.add_command(jarvis_reply_context)
 
 if __name__ == "__main__":
     init_db()
