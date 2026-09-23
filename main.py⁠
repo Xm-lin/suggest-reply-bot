@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 from google import genai
 
-# Gweinydd Web i baratoi Render Port Scanning
+# 騙 Render 的 Dummy 伺服器，解決 Port Binding 問題
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
@@ -15,7 +15,7 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-# Setup Cronfa Data SQLite
+# 初始化 SQLite 資料庫
 def init_db():
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
@@ -47,7 +47,7 @@ def get_api_key(user_id: int):
     conn.close()
     return row[0] if row else None
 
-# Setup Bot Discord
+# 初始化 Discord 機器人
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -56,24 +56,24 @@ async def on_ready():
     init_db()
     try:
         synced = await bot.tree.sync()
-        print(f"✅ Prewylio bot {bot.user} wedi syncio {len(synced)} gorchymyn!")
+        print(f"✅ 機器人 {bot.user} 已成功同步 {len(synced)} 個指令！")
     except Exception as e:
-        print(f"Error syncing commands: {e}")
+        print(f"同步指令錯誤: {e}")
 
-# Gorchymyn /set_key
-@bot.tree.command(name="set_key", description="Cadw dy Gemini API Key eich hun")
-@app_commands.describe(api_key="Eich Google Gemini API Key")
+# 斜線指令 /set_key
+@bot.tree.command(name="set_key", description="設定並儲存你的 Gemini API Key")
+@app_commands.describe(api_key="輸入你的 Google Gemini API Key")
 async def set_key(interaction: discord.Interaction, api_key: str):
     save_api_key(interaction.user.id, api_key.strip())
-    await interaction.response.send_message("✅ API Key wedi'i gadw'n lwyddiannus!", ephemeral=True)
+    await interaction.response.send_message("✅ API Key 已成功儲存！", ephemeral=True)
 
-# Gorchymyn /reply
-@bot.tree.command(name="reply", description="Ateb a awgrymir gan AI")
-@app_commands.describe(prompt="Nodwch y neges neu'r cyd-destun")
+# 斜線指令 /reply
+@bot.tree.command(name="reply", description="生成 AI 建議回覆")
+@app_commands.describe(prompt="輸入訊息或對話背景")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
-        await interaction.response.send_message("❌ Mynediad wedi'i wrthod! Defnyddiwch `/set_key` gyntaf.", ephemeral=True)
+        await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 API Key！", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -82,18 +82,18 @@ async def reply(interaction: discord.Interaction, prompt: str):
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=f"Awgryrwch ateb Discord byr ar gyfer hyn: {prompt}"
+            contents=f"請針對以下對話內容，提供簡短且熱情的 Discord 簡體/繁體中文建議回覆：{prompt}"
         )
-        await interaction.followup.send(f"💡 **Awgrym Ateb:**\n{response.text}", ephemeral=True)
+        await interaction.followup.send(f"💡 **AI 建議回覆：**\n{response.text}", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Error: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ 發生錯誤: {str(e)}", ephemeral=True)
 
-# Gorchymyn Devis Context Menu: AI Suggest Reply
+# 右鍵選單：AI建議回覆
 @app_commands.context_menu(name="AI建議回覆")
 async def suggest_reply_context(interaction: discord.Interaction, message: discord.Message):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
-        await interaction.response.send_message("❌ Defnyddiwch `/set_key` i gadw API key gyntaf.", ephemeral=True)
+        await interaction.response.send_message("❌ 請先使用 `/set_key` 設定你的 API Key！", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -102,17 +102,18 @@ async def suggest_reply_context(interaction: discord.Interaction, message: disco
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=f"Atebwch y neges hon yn Discord: {message.content}"
+            contents=f"請針對這條 Discord 訊息，提供簡短且適當的回覆建議：{message.content}"
         )
-        await interaction.followup.send(f"💡 **Awgrym Ateb:**\n{response.text}", ephemeral=True)
+        await interaction.followup.send(f"💡 **AI 建議回覆：**\n{response.text}", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Error: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ 發生錯誤: {str(e)}", ephemeral=True)
 
 bot.tree.add_command(suggest_reply_context)
 
-# Dechrau'r bot
+# 啟動機器人
 token = os.environ.get("DISCORD_BOT_TOKEN")
 if token:
     bot.run(token)
 else:
-    print("❌ DISCORD_BOT_TOKEN missing!")
+    print("❌ 找不到 DISCORD_BOT_TOKEN 環境變數！")
+
