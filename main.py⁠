@@ -1,5 +1,3 @@
-import os
-import sqlite3
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import discord
@@ -7,53 +5,19 @@ from discord import app_commands
 from discord.ext import commands
 from google import genai
 
+from config import PORT, DISCORD_TOKEN
+from database import init_db, save_api_key, get_api_key
+from jev_pipeline import run_jev_two_stage_pipeline
+
 # =========================================================
 # Render Port Dummy Server
 # =========================================================
 def run_dummy_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-    print(f"🌐 Dummy server running on port {port}")
+    server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
+    print(f"🌐 Dummy server running on port {PORT}")
     server.serve_forever()
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
-
-# =========================================================
-# SQLite Database
-# =========================================================
-DB_FILE = "users.db"
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS api_keys (
-            user_id INTEGER PRIMARY KEY,
-            api_key TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def save_api_key(user_id: int, api_key: str):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO api_keys (user_id, api_key) 
-        VALUES (?, ?) 
-        ON CONFLICT(user_id) 
-        DO UPDATE SET api_key=excluded.api_key
-    """, (user_id, api_key))
-    conn.commit()
-    conn.close()
-
-def get_api_key(user_id: int):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT api_key FROM api_keys WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else None
 
 # =========================================================
 # Discord Bot
@@ -62,9 +26,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# =========================================================
-# Bot Ready
-# =========================================================
 @bot.event
 async def on_ready():
     init_db()
@@ -101,61 +62,9 @@ async def set_key(interaction: discord.Interaction, api_key: str):
         await interaction.response.send_message(f"❌ API Key 驗證失敗：\n`{str(e)[:1500]}`", ephemeral=True)
 
 # =========================================================
-# Gemini API Core Call
-# =========================================================
-def call_gemini_api(api_key: str, prompt: str) -> str:
-    client = genai.Client(api_key=api_key)
-    candidate_models = ["gemini-3-flash", "gemini-3.6-flash", "gemini-flash-latest"]
-    
-    last_err = None
-    for m in candidate_models:
-        try:
-            res = client.models.generate_content(model=m, contents=prompt)
-            if res.text:
-                return res.text.strip()
-        except Exception as e:
-            last_err = e
-            continue
-
-    try:
-        models = list(client.models.list())
-        for model in models:
-            m_name = getattr(model, "name", "")
-            supported_actions = getattr(model, "supported_actions", [])
-            if "generateContent" in supported_actions and "flash" in m_name.lower():
-                try:
-                    res = client.models.generate_content(model=m_name, contents=prompt)
-                    if res.text:
-                        return res.text.strip()
-                except Exception:
-                    continue
-    except Exception:
-        pass
-
-    raise Exception(f"無法存取 Gemini API：{last_err}")
-
-# =========================================================
-# 自然語言 Prompt 樣板
-# =========================================================
-NATURAL_PROMPT_TEMPLATE = """
-你是 18 歲的台灣年輕人，正躺在沙發上滑 Discord 跟朋友聊天。
-請根據對話紀錄，擬定你（使用者）準備傳送的下句接話內容。
-
-【語氣風格指南】
-1. 極度簡短：1~15 個字內解決，能用幾個字表達就絕不多寫。
-2. 真人隨意感：多用「欸、亂講、真的假、笑死、確實、好啊、無聊、還行」。
-3. 標點規範：禁止使用驚嘆號「！」，句尾不要加句號，盡量不使用 Emoji。
-4. 禁用 AI 罐頭詞：嚴禁「嗨嗨、很高興、超讚、當然、沒問題、很高興能為您提供服務」。
-5. 直接輸出：不換行，不要引號，不要做任何補充或解釋，直接給出傳送內容。
-
-對話情境：
-{context}
-"""
-
-# =========================================================
 # /reply
 # =========================================================
-@bot.tree.command(name="reply", description="生成極致自然的接話回覆")
+@bot.tree.command(name="reply", description="透過 Jev 兩階段分析生成極致自然的接話")
 @app_commands.describe(prompt="輸入對方說的話或話題")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
@@ -166,8 +75,7 @@ async def reply(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        full_prompt = NATURAL_PROMPT_TEMPLATE.format(context=f"對方說：{prompt}")
-        reply_text = call_gemini_api(api_key, full_prompt)
+        reply_text = run_jev_two_stage_pipeline(api_key, f"對方說：{prompt}")
         await interaction.followup.send(f"💡 **建議回覆：** {reply_text}", ephemeral=True)
     except Exception as e:
         print(f"❌ /reply Gemini 錯誤：{e}")
@@ -194,23 +102,19 @@ async def jarvis_reply_context(interaction: discord.Interaction, message: discor
         history_messages.append(f"{message.author.display_name}: {message.content}")
         chat_context = "\n".join(history_messages)
 
-        full_prompt = NATURAL_PROMPT_TEMPLATE.format(context=chat_context)
-        reply_text = call_gemini_api(api_key, full_prompt)
+        reply_text = run_jev_two_stage_pipeline(api_key, chat_context)
         await interaction.followup.send(f"💡 **建議回覆：** {reply_text}", ephemeral=True)
     except Exception as e:
         print(f"❌ JARVIS 建議回覆錯誤：{e}")
         await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
 
-# =========================================================
-# 啟動 Bot
-# =========================================================
+# 註冊 Context Menu 指令
 bot.tree.add_command(jarvis_reply_context)
 
 if __name__ == "__main__":
     init_db()
-    token = os.environ.get("DISCORD_BOT_TOKEN")
-    if not token:
+    if not DISCORD_TOKEN:
         print("❌ 找不到 DISCORD_BOT_TOKEN 環境變數！")
     else:
         print("🚀 正在啟動 Discord Bot...")
-        bot.run(token)
+        bot.run(DISCORD_TOKEN)
