@@ -20,47 +20,27 @@ def run_dummy_server():
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
 # =========================================================
-# Custom Bot Class
+# Discord Bot
 # =========================================================
-class SuggestReplyBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        super().__init__(command_prefix="!", intents=intents)
-
-    async def setup_hook(self):
-        try:
-            synced = await self.tree.sync()
-            print(f"✅ 已成功全域同步 {len(synced)} 個 Discord 指令！")
-        except Exception as e:
-            print(f"❌ 同步 Discord 指令錯誤：{e}")
-
-bot = SuggestReplyBot()
-
-# 定義允許的使用情境與安裝類型
-allowed_contexts = app_commands.AppCommandContext(
-    guild=True,
-    dm_channel=True,
-    private_channel=True
-)
-
-allowed_installs = app_commands.AppInstallationType(
-    guild=True,
-    user=True
-)
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
     init_db()
-    print(f"🚀 機器人 {bot.user} 已成功登入並就緒！")
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ 機器人 {bot.user} 已成功登入！")
+        print(f"✅ 已同步 {len(synced)} 個 Discord 指令")
+    except Exception as e:
+        print(f"❌ 同步 Discord 指令錯誤：{e}")
 
 # =========================================================
 # /set_key
 # =========================================================
-@bot.tree.command(name="set_key", description="儲存並驗證你的 Gemini API Key")
-@app_commands.allowed_contexts(allowed_contexts)
-@app_commands.allowed_installs(allowed_installs)
-@app_commands.describe(api_key="請輸入你的 Google Gemini API Key")
+@bot.tree.command(name="set_key", description="設定並儲存你的 Gemini API Key")
+@app_commands.describe(api_key="輸入你的 Google Gemini API Key")
 async def set_key(interaction: discord.Interaction, api_key: str):
     api_key = api_key.strip()
     if not api_key:
@@ -68,8 +48,8 @@ async def set_key(interaction: discord.Interaction, api_key: str):
         return
 
     try:
-        genai_client = genai.Client(api_key=api_key)
-        models = list(genai_client.models.list())
+        client = genai.Client(api_key=api_key)
+        models = list(client.models.list())
         generate_models = [m.name for m in models if "generateContent" in getattr(m, "supported_actions", [])]
 
         if not generate_models:
@@ -84,10 +64,8 @@ async def set_key(interaction: discord.Interaction, api_key: str):
 # =========================================================
 # /reply
 # =========================================================
-@bot.tree.command(name="reply", description="分析對話內容並生成自然順暢的接話建議")
-@app_commands.allowed_contexts(allowed_contexts)
-@app_commands.allowed_installs(allowed_installs)
-@app_commands.describe(prompt="輸入對方說的話或想聊的話題")
+@bot.tree.command(name="reply", description="透過 Jev 兩階段分析生成極致自然的接話")
+@app_commands.describe(prompt="輸入對方說的話或話題")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
@@ -107,8 +85,6 @@ async def reply(interaction: discord.Interaction, prompt: str):
 # 右鍵選單：JARVIS 上下文分析建議回覆
 # =========================================================
 @bot.tree.context_menu(name="JARVIS建議回覆")
-@app_commands.allowed_contexts(allowed_contexts)
-@app_commands.allowed_installs(allowed_installs)
 async def jarvis_reply_context(interaction: discord.Interaction, message: discord.Message):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
@@ -119,14 +95,13 @@ async def jarvis_reply_context(interaction: discord.Interaction, message: discor
 
     try:
         history_messages = []
-        if interaction.channel and hasattr(interaction.channel, "history"):
-            try:
-                async for msg in interaction.channel.history(limit=6, before=message.created_at, oldest_first=True):
-                    if msg.content.strip():
-                        history_messages.append(f"{msg.author.display_name}: {msg.content}")
-            except Exception:
-                pass
-
+        try:
+            async for msg in interaction.channel.history(limit=6, before=message.created_at, oldest_first=True):
+                if msg.content.strip():
+                    history_messages.append(f"{msg.author.display_name}: {msg.content}")
+        except Exception:
+            pass
+        
         history_messages.append(f"{message.author.display_name}: {message.content}")
         chat_context = "\n".join(history_messages)
 
