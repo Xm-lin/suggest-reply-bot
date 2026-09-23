@@ -1,12 +1,13 @@
-
 import os
 import sqlite3
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 from google import genai
+
 
 # =========================================================
 # 環境變數與設定
@@ -15,18 +16,21 @@ PORT = int(os.environ.get("PORT", 10000))
 DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 DB_NAME = "user_keys.db"
 
+
 # =========================================================
 # SQLite 資料庫操作
 # =========================================================
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_keys (
             user_id INTEGER PRIMARY KEY,
             api_key TEXT NOT NULL
         )
     """)
+
     conn.commit()
     conn.close()
 
@@ -34,11 +38,14 @@ def init_db():
 def save_api_key(user_id: int, api_key: str):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+
     cursor.execute("""
         INSERT INTO user_keys (user_id, api_key)
         VALUES (?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET api_key=excluded.api_key
+        ON CONFLICT(user_id)
+        DO UPDATE SET api_key=excluded.api_key
     """, (user_id, api_key))
+
     conn.commit()
     conn.close()
 
@@ -46,12 +53,15 @@ def save_api_key(user_id: int, api_key: str):
 def get_api_key(user_id: int) -> str | None:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+
     cursor.execute(
         "SELECT api_key FROM user_keys WHERE user_id = ?",
         (user_id,)
     )
+
     row = cursor.fetchone()
     conn.close()
+
     return row[0] if row else None
 
 
@@ -63,6 +73,7 @@ def run_dummy_server():
         ("0.0.0.0", PORT),
         SimpleHTTPRequestHandler
     )
+
     print(f"🌐 Dummy server running on port {PORT}")
     server.serve_forever()
 
@@ -74,9 +85,10 @@ threading.Thread(
 
 
 # =========================================================
-# Bot 類別定義
+# Bot
 # =========================================================
 class SuggestReplyBot(commands.Bot):
+
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -89,14 +101,19 @@ class SuggestReplyBot(commands.Bot):
     async def setup_hook(self):
         init_db()
 
-        print("🔄 正在向 Discord API 同步斜線指令...")
+        print("🔄 正在向 Discord API 同步指令...")
 
         try:
             synced = await self.tree.sync()
+
             print(
                 f"✅【同步成功】已全域同步 "
-                f"{len(synced)} 個 Discord 指令！"
+                f"{len(synced)} 個 Discord 指令："
             )
+
+            for command in synced:
+                print(f"   • {command.name}")
+
         except Exception as e:
             print(f"❌ 同步 Discord 指令失敗：{e}")
 
@@ -105,37 +122,29 @@ bot = SuggestReplyBot()
 
 
 # =========================================================
-# Discord 指令使用範圍
-# =========================================================
-allowed_contexts = app_commands.AppCommandContext(
-    guild=True,
-    dm_channel=True,
-    private_channel=True
-)
-
-allowed_installs = app_commands.AppInstallationType(
-    guild=True,
-    user=True
-)
-
-
-# =========================================================
-# Bot Ready
-# =========================================================
-@bot.event
-async def on_ready():
-    print(f"🚀 機器人 {bot.user} 已登入並準備就緒！")
-
-
-# =========================================================
 # /set_key
+# 可使用於：
+# - 伺服器
+# - Bot 私訊
+# - 群組私訊
+#
+# 可安裝於：
+# - Guild Install
+# - User Install
 # =========================================================
 @bot.tree.command(
     name="set_key",
     description="設定並儲存你的 Gemini API Key"
 )
-@app_commands.allowed_contexts(allowed_contexts)
-@app_commands.allowed_installs(allowed_installs)
+@app_commands.allowed_contexts(
+    guild=True,
+    dm_channel=True,
+    private_channel=True
+)
+@app_commands.allowed_installs(
+    guild=True,
+    user=True
+)
 @app_commands.describe(
     api_key="輸入你的 Google Gemini API Key"
 )
@@ -195,8 +204,15 @@ async def set_key(
     name="reply",
     description="生成自然的接話建議"
 )
-@app_commands.allowed_contexts(allowed_contexts)
-@app_commands.allowed_installs(allowed_installs)
+@app_commands.allowed_contexts(
+    guild=True,
+    dm_channel=True,
+    private_channel=True
+)
+@app_commands.allowed_installs(
+    guild=True,
+    user=True
+)
 @app_commands.describe(
     prompt="輸入對方說的話或話題"
 )
@@ -220,8 +236,8 @@ async def reply(
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=(
-                f"對方說了這句話：『{prompt}』。"
-                f"請提供一份自然且流暢的回覆建議。"
+                f"對方說了這句話：『{prompt}』。\n"
+                "請提供一份自然、流暢、不尷尬的回覆建議。"
             )
         )
 
@@ -232,18 +248,46 @@ async def reply(
     except Exception as e:
         print(f"❌ /reply Gemini 錯誤：{e}")
 
-        await interaction.followup.send(
-            f"⚠️ 發生錯誤：\n"
-            f"```text\n{str(e)[:1800]}\n```"
-        )
+        error_text = str(e)
+
+        if "503" in error_text or "UNAVAILABLE" in error_text:
+            await interaction.followup.send(
+                "⚠️ Gemini 目前負載較高，請稍後再試。"
+            )
+        else:
+            await interaction.followup.send(
+                f"⚠️ 發生錯誤：\n"
+                f"```text\n{error_text[:1800]}\n```"
+            )
 
 
 # =========================================================
 # 右鍵選單：建議回覆
+#
+# 可以：
+# 對任何訊息按右鍵
+# → Apps
+# → 建議回覆
+#
+# 支援：
+# - 伺服器
+# - Bot DM
+# - 私人聊天
+# - User Install
+# - Guild Install
 # =========================================================
-@bot.tree.context_menu(name="建議回覆")
-@app_commands.allowed_contexts(allowed_contexts)
-@app_commands.allowed_installs(allowed_installs)
+@bot.tree.context_menu(
+    name="建議回覆"
+)
+@app_commands.allowed_contexts(
+    guild=True,
+    dm_channel=True,
+    private_channel=True
+)
+@app_commands.allowed_installs(
+    guild=True,
+    user=True
+)
 async def jarvis_reply_context(
     interaction: discord.Interaction,
     message: discord.Message
@@ -264,8 +308,8 @@ async def jarvis_reply_context(
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=(
-                f"對方說了這句話：『{message.content}』。"
-                f"請提供一份自然且流暢的回覆建議。"
+                f"對方說了這句話：『{message.content}』。\n"
+                "請提供一份自然、流暢、不尷尬的回覆建議。"
             )
         )
 
@@ -276,18 +320,27 @@ async def jarvis_reply_context(
     except Exception as e:
         print(f"❌ 右鍵選單 Gemini 錯誤：{e}")
 
-        await interaction.followup.send(
-            f"⚠️ 發生錯誤：\n"
-            f"```text\n{str(e)[:1800]}\n```"
-        )
+        error_text = str(e)
+
+        if "503" in error_text or "UNAVAILABLE" in error_text:
+            await interaction.followup.send(
+                "⚠️ Gemini 目前負載較高，請稍後再試。"
+            )
+        else:
+            await interaction.followup.send(
+                f"⚠️ 發生錯誤：\n"
+                f"```text\n{error_text[:1800]}\n```"
+            )
 
 
 # =========================================================
-# 啟動 Bot
+# 啟動
 # =========================================================
 if __name__ == "__main__":
+
     if not DISCORD_TOKEN:
         print("❌ 找不到 DISCORD_BOT_TOKEN 環境變數！")
+
     else:
         print("🚀 正在啟動 Discord Bot...")
         bot.run(DISCORD_TOKEN)
