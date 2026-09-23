@@ -17,9 +17,12 @@ PORT = int(os.environ.get("PORT", 10000))
 DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 DB_NAME = "user_keys.db"
 
+# Gemini 模型
+GEMINI_MODEL = "gemini-3.6-flash"
+
 
 # =========================
-# SQLite
+# SQLite 資料庫
 # =========================
 
 def init_db():
@@ -45,7 +48,7 @@ def save_api_key(user_id: int, api_key: str):
         INSERT INTO user_keys (user_id, api_key)
         VALUES (?, ?)
         ON CONFLICT(user_id)
-        DO UPDATE SET api_key=excluded.api_key
+        DO UPDATE SET api_key = excluded.api_key
     """, (user_id, api_key))
 
     conn.commit()
@@ -62,23 +65,32 @@ def get_api_key(user_id: int) -> str | None:
     )
 
     row = cursor.fetchone()
+
     conn.close()
 
-    return row[0] if row else None
+    if row:
+        return row[0]
+
+    return None
 
 
 # =========================
-# Render Port
+# Render Dummy Web Server
 # =========================
 
 def run_dummy_server():
-    server = HTTPServer(
-        ("0.0.0.0", PORT),
-        SimpleHTTPRequestHandler
-    )
+    try:
+        server = HTTPServer(
+            ("0.0.0.0", PORT),
+            SimpleHTTPRequestHandler
+        )
 
-    print(f"🌐 Dummy server running on port {PORT}")
-    server.serve_forever()
+        print(f"🌐 Dummy server running on port {PORT}")
+
+        server.serve_forever()
+
+    except Exception as e:
+        print(f"❌ Dummy server 啟動失敗：{e}")
 
 
 threading.Thread(
@@ -94,7 +106,10 @@ threading.Thread(
 class SuggestReplyBot(commands.Bot):
 
     def __init__(self):
+
         intents = discord.Intents.default()
+
+        # 保留 Message Content Intent
         intents.message_content = True
 
         super().__init__(
@@ -103,11 +118,14 @@ class SuggestReplyBot(commands.Bot):
         )
 
     async def setup_hook(self):
+
+        # 初始化資料庫
         init_db()
 
         print("🔄 正在向 Discord API 同步斜線指令...")
 
         try:
+
             synced = await self.tree.sync()
 
             print(
@@ -116,32 +134,13 @@ class SuggestReplyBot(commands.Bot):
             )
 
         except Exception as e:
-            print(f"❌ 同步 Discord 指令失敗：{e}")
+
+            print(
+                f"❌ 同步 Discord 指令失敗：{e}"
+            )
 
 
 bot = SuggestReplyBot()
-
-
-# =========================
-# Command Context / Install
-# =========================
-# 支援：
-# - Server
-# - 一對一 DM
-# - Group DM / Private Channel
-# - User Install
-# - Guild Install
-
-allowed_contexts = app_commands.AppCommandContext(
-    guild=True,
-    dm_channel=True,
-    private_channel=True
-)
-
-allowed_installs = app_commands.AppInstallationType(
-    guild=True,
-    user=True
-)
 
 
 # =========================
@@ -150,15 +149,16 @@ allowed_installs = app_commands.AppInstallationType(
 
 @bot.event
 async def on_ready():
+
     print(
         f"🚀 機器人 {bot.user} "
         f"已登入並準備就緒！"
     )
 
 
-# =========================
+# ============================================================
 # /set_key
-# =========================
+# ============================================================
 
 @bot.tree.command(
     name="set_key",
@@ -166,7 +166,7 @@ async def on_ready():
 )
 @app_commands.allowed_contexts(
     guilds=True,
-    dm_channels=True,
+    dms=True,
     private_channels=True
 )
 @app_commands.allowed_installs(
@@ -183,18 +183,34 @@ async def set_key(
 
     api_key = api_key.strip()
 
+    # -------------------------
+    # 檢查是否為空
+    # -------------------------
+
     if not api_key:
+
         await interaction.response.send_message(
             "❌ API Key 不能是空白。"
         )
+
         return
 
+    # -------------------------
+    # 驗證 API Key
+    # -------------------------
+
     try:
+
+        print(
+            f"🔑 使用者 {interaction.user.id} "
+            f"正在驗證 Gemini API Key..."
+        )
 
         client = genai.Client(
             api_key=api_key
         )
 
+        # 嘗試取得模型列表
         models = list(
             client.models.list()
         )
@@ -211,31 +227,49 @@ async def set_key(
         ]
 
         if not generate_models:
+
             await interaction.response.send_message(
                 "❌ 這個 API Key 沒有可用的 Gemini 文字生成模型。"
             )
+
             return
+
+        # -------------------------
+        # 儲存 API Key
+        # -------------------------
 
         save_api_key(
             interaction.user.id,
             api_key
         )
 
+        print(
+            f"✅ 使用者 {interaction.user.id} "
+            f"API Key 驗證成功"
+        )
+
         await interaction.response.send_message(
-            "✅ API Key 已成功驗證並儲存！"
+            "✅ API Key 已成功驗證並儲存！\n"
+            "現在可以使用 `/reply` 或右鍵訊息 → Apps → 建議回覆。"
         )
 
     except Exception as e:
 
+        print(
+            f"❌ /set_key API Key 驗證錯誤：{e}"
+        )
+
         await interaction.response.send_message(
             "❌ API Key 驗證失敗：\n"
-            f"`{str(e)[:1500]}`"
+            f"```text\n"
+            f"{str(e)[:1500]}"
+            f"\n```"
         )
 
 
-# =========================
+# ============================================================
 # /reply
-# =========================
+# ============================================================
 
 @bot.tree.command(
     name="reply",
@@ -243,7 +277,7 @@ async def set_key(
 )
 @app_commands.allowed_contexts(
     guilds=True,
-    dm_channels=True,
+    dms=True,
     private_channels=True
 )
 @app_commands.allowed_installs(
@@ -258,31 +292,68 @@ async def reply(
     prompt: str
 ):
 
+    # -------------------------
+    # 取得使用者 API Key
+    # -------------------------
+
     api_key = get_api_key(
         interaction.user.id
     )
 
     if not api_key:
+
         await interaction.response.send_message(
             "❌ 請先使用 `/set_key` 設定你的 Gemini API Key！"
         )
+
         return
+
+    # -------------------------
+    # Discord 回應延遲
+    # -------------------------
 
     await interaction.response.defer()
 
     try:
+
+        print(
+            f"💬 使用者 {interaction.user.id} "
+            f"正在使用 /reply"
+        )
 
         client = genai.Client(
             api_key=api_key
         )
 
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+
+            model=GEMINI_MODEL,
+
             contents=(
-                f"對方說了這句話：『{prompt}』。\n"
-                "請提供一份自然且流暢的回覆建議。"
+                "你是一個 Discord 接話建議助手。\n"
+                "請根據對方說的話，提供自然、口語、"
+                "不尷尬的回覆建議。\n\n"
+                f"對方說了：『{prompt}』\n\n"
+                "只需要提供適合直接傳出去的回覆，"
+                "不要解釋你的分析過程。"
             )
         )
+
+        # -------------------------
+        # 檢查 Gemini 回應
+        # -------------------------
+
+        if not response.text:
+
+            await interaction.followup.send(
+                "⚠️ Gemini 沒有產生文字回覆。"
+            )
+
+            return
+
+        # -------------------------
+        # 發送結果
+        # -------------------------
 
         await interaction.followup.send(
             f"💡 **建議回覆：**\n"
@@ -297,22 +368,22 @@ async def reply(
 
         await interaction.followup.send(
             "⚠️ 發生錯誤：\n"
-            "```text\n"
-            f"{str(e)[:1800]}\n"
-            "```"
+            f"```text\n"
+            f"{str(e)[:1800]}"
+            f"\n```"
         )
 
 
-# =========================
+# ============================================================
 # 右鍵訊息 → Apps → 建議回覆
-# =========================
+# ============================================================
 
 @bot.tree.context_menu(
     name="建議回覆"
 )
 @app_commands.allowed_contexts(
     guilds=True,
-    dm_channels=True,
+    dms=True,
     private_channels=True
 )
 @app_commands.allowed_installs(
@@ -324,31 +395,87 @@ async def jarvis_reply_context(
     message: discord.Message
 ):
 
+    # -------------------------
+    # 取得使用者 API Key
+    # -------------------------
+
     api_key = get_api_key(
         interaction.user.id
     )
 
     if not api_key:
+
         await interaction.response.send_message(
             "❌ 請先使用 `/set_key` 設定你的 Gemini API Key！"
         )
+
         return
+
+    # -------------------------
+    # Discord 回應延遲
+    # -------------------------
 
     await interaction.response.defer()
 
     try:
+
+        print(
+            f"🖱️ 使用者 {interaction.user.id} "
+            f"使用右鍵「建議回覆」"
+        )
+
+        # -------------------------
+        # 取得訊息內容
+        # -------------------------
+
+        message_content = message.content.strip()
+
+        if not message_content:
+
+            await interaction.followup.send(
+                "⚠️ 這則訊息沒有文字內容，"
+                "目前無法產生回覆建議。"
+            )
+
+            return
+
+        # -------------------------
+        # Gemini
+        # -------------------------
 
         client = genai.Client(
             api_key=api_key
         )
 
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+
+            model=GEMINI_MODEL,
+
             contents=(
-                f"對方說了這句話：『{message.content}』。\n"
-                "請提供一份自然且流暢的回覆建議。"
+                "你是一個 Discord 接話建議助手。\n"
+                "請根據對方說的話，提供自然、口語、"
+                "不尷尬的回覆建議。\n\n"
+                f"對方說了：『{message_content}』\n\n"
+                "只需要提供適合直接傳出去的回覆，"
+                "不要解釋你的分析過程。"
             )
         )
+
+        # -------------------------
+        # 檢查 Gemini 回應
+        # -------------------------
+
+        if not response.text:
+
+            await interaction.followup.send(
+                "⚠️ Gemini 沒有產生文字回覆。"
+            )
+
+            return
+
+        # -------------------------
+        # 發送結果
+        # -------------------------
 
         await interaction.followup.send(
             f"💡 **建議回覆：**\n"
@@ -363,15 +490,15 @@ async def jarvis_reply_context(
 
         await interaction.followup.send(
             "⚠️ 發生錯誤：\n"
-            "```text\n"
-            f"{str(e)[:1800]}\n"
-            "```"
+            f"```text\n"
+            f"{str(e)[:1800]}"
+            f"\n```"
         )
 
 
-# =========================
-# 啟動
-# =========================
+# ============================================================
+# 啟動 Bot
+# ============================================================
 
 if __name__ == "__main__":
 
@@ -387,4 +514,14 @@ if __name__ == "__main__":
             "🚀 正在啟動 Discord Bot..."
         )
 
-        bot.run(DISCORD_TOKEN)
+        try:
+
+            bot.run(
+                DISCORD_TOKEN
+            )
+
+        except Exception as e:
+
+            print(
+                f"❌ Discord Bot 啟動失敗：{e}"
+            )
