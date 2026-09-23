@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import threading
+import asyncio
 import json
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
@@ -10,20 +11,18 @@ from discord.ext import commands
 from google import genai
 
 
-# =========================================================
+# =========================
 # 基本設定
-# =========================================================
+# =========================
 
 PORT = int(os.environ.get("PORT", 10000))
 DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
-
 DB_NAME = "user_keys.db"
 
 
-# =========================================================
+# =========================
 # Gemini 模型庫
-# 由前到後依序嘗試
-# =========================================================
+# =========================
 
 GEMINI_MODELS = [
     "gemini-3.8-flash",
@@ -35,12 +34,13 @@ GEMINI_MODELS = [
 ]
 
 
-# =========================================================
+# =========================
 # SQLite
-# =========================================================
+# =========================
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -56,6 +56,7 @@ def init_db():
 
 def save_api_key(user_id, api_key):
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -71,6 +72,7 @@ def save_api_key(user_id, api_key):
 
 def get_api_key(user_id):
     conn = sqlite3.connect(DB_NAME)
+
     cursor = conn.cursor()
 
     cursor.execute(
@@ -79,26 +81,26 @@ def get_api_key(user_id):
     )
 
     row = cursor.fetchone()
+
     conn.close()
 
-    if row:
-        return row[0]
-
-    return None
+    return row[0] if row else None
 
 
-# =========================================================
+# =========================
 # Render Dummy Server
-# =========================================================
+# =========================
 
 class HealthHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
+
         self.send_header(
             "Content-Type",
             "text/plain; charset=utf-8"
         )
+
         self.end_headers()
 
         self.wfile.write(b"OK")
@@ -108,78 +110,31 @@ class HealthHandler(SimpleHTTPRequestHandler):
 
 
 def run_dummy_server():
+
     try:
         server = HTTPServer(
             ("0.0.0.0", PORT),
             HealthHandler
         )
 
-        print(
-            f"Dummy server running on port {PORT}"
-        )
+        print(f"Dummy server running on port {PORT}")
 
         server.serve_forever()
 
     except Exception as e:
-        print(
-            f"Dummy server 啟動失敗：{e}"
-        )
+        print(f"Dummy server 啟動失敗：{e}")
 
 
+# 啟動 Render Web Server
 threading.Thread(
     target=run_dummy_server,
     daemon=True
 ).start()
 
 
-# =========================================================
-# JSON 處理
-# =========================================================
-
-def parse_gemini_json(text):
-    text = text.strip()
-
-    # 移除 Markdown code fence
-    if text.startswith("```"):
-        lines = text.splitlines()
-
-        if lines:
-            lines = lines[1:]
-
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-
-        text = "\n".join(lines).strip()
-
-    # 直接解析
-    try:
-        return json.loads(text)
-
-    except Exception:
-        pass
-
-    # 找 JSON 物件
-    start = text.find("{")
-    end = text.rfind("}")
-
-    if start != -1 and end != -1 and end > start:
-
-        try:
-            return json.loads(
-                text[start:end + 1]
-            )
-
-        except Exception:
-            pass
-
-    raise ValueError(
-        "Gemini 回傳的內容不是有效 JSON"
-    )
-
-
-# =========================================================
-# 判斷是否應該換下一個模型
-# =========================================================
+# =========================
+# Gemini 錯誤判斷
+# =========================
 
 def should_try_next_model(error):
 
@@ -205,14 +160,11 @@ def should_try_next_model(error):
     )
 
 
-# =========================================================
-# Gemini 模型 Fallback
-# =========================================================
+# =========================
+# Gemini 模型 fallback
+# =========================
 
-def generate_with_model_fallback(
-    client,
-    prompt
-):
+def generate_with_model_fallback(client, prompt):
 
     last_error = None
 
@@ -250,17 +202,60 @@ def generate_with_model_fallback(
             raise
 
     raise RuntimeError(
-        f"所有 Gemini 模型都無法使用："
-        f"{last_error}"
+        f"所有 Gemini 模型都無法使用：{last_error}"
     )
 
 
-# =========================================================
-# 一次完成：
-# 1. 分析對方狀態
-# 2. 分析我的語氣
-# 3. 產生三種回答
-# =========================================================
+# =========================
+# Gemini JSON 解析
+# =========================
+
+def parse_gemini_json(text):
+
+    text = text.strip()
+
+    # 移除 Markdown code block
+    if text.startswith("```"):
+
+        lines = text.splitlines()
+
+        if lines:
+            lines = lines[1:]
+
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        text = "\n".join(lines).strip()
+
+    # 直接解析
+    try:
+        return json.loads(text)
+
+    except Exception:
+        pass
+
+    # 嘗試抓出 JSON
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start != -1 and end != -1 and end > start:
+
+        try:
+            return json.loads(
+                text[start:end + 1]
+            )
+
+        except Exception:
+            pass
+
+    raise ValueError(
+        "Gemini 回傳的內容不是有效 JSON"
+    )
+
+
+# =========================
+# 分析 + 產生回答
+# =========================
 
 def analyze_and_generate(
     client,
@@ -304,9 +299,11 @@ def analyze_and_generate(
 請根據聊天紀錄，完成兩件事情：
 
 第一：
+
 判斷「對方目前的狀態」。
 
 例如：
+
 - 分享近況
 - 提問
 - 抱怨
@@ -314,9 +311,12 @@ def analyze_and_generate(
 - 尋求幫助
 - 延續話題
 - 單純陳述事情
+- 打招呼
 
 第二：
-根據對方狀態與聊天內容，產生三種自然的回覆。
+
+根據對方狀態與聊天內容，
+產生三種自然的回覆。
 
 {style_instruction}
 
@@ -370,20 +370,12 @@ def analyze_and_generate(
 
     data = parse_gemini_json(text)
 
-    # -----------------------------
-    # 狀態
-    # -----------------------------
-
     status = str(
         data.get("status", "")
     ).strip()
 
     if not status:
         status = "目前無法判斷對方的聊天狀態。"
-
-    # -----------------------------
-    # 回覆
-    # -----------------------------
 
     replies = data.get(
         "replies",
@@ -418,9 +410,9 @@ def analyze_and_generate(
     return status, result
 
 
-# =========================================================
-# 取得對話紀錄
-# =========================================================
+# =========================
+# 取得聊天紀錄
+# =========================
 
 async def get_conversation_for_user(
     channel,
@@ -445,10 +437,7 @@ async def get_conversation_for_user(
 
                 speaker = "我"
 
-            elif (
-                message.author.id
-                == target_message.author.id
-            ):
+            elif message.author.id == target_message.author.id:
 
                 speaker = "對方"
 
@@ -468,7 +457,6 @@ async def get_conversation_for_user(
 
     messages.reverse()
 
-    # 加入最新訊息
     messages.append(
         f"對方：{target_message.content}"
     )
@@ -483,9 +471,7 @@ async def get_conversation_for_user(
         if message.startswith("我：")
     )
 
-    has_user_history = (
-        user_reply_count >= 2
-    )
+    has_user_history = user_reply_count >= 2
 
     return (
         conversation_text,
@@ -493,9 +479,9 @@ async def get_conversation_for_user(
     )
 
 
-# =========================================================
+# =========================
 # 最終輸出格式
-# =========================================================
+# =========================
 
 def format_final_result(
     status,
@@ -503,28 +489,27 @@ def format_final_result(
 ):
 
     output = (
-        f"對方狀態\n"
-        f"{status}\n\n"
-        f"建議回答\n"
+        f"\n"
+        f"對方狀態：{status}\n\n"
+        f"－－－－－－－－\n"
+        f"建議回答：\n"
     )
 
     for reply in replies:
 
         output += (
-            f"\n{reply['style']}\n"
+            f"{reply['style']}："
             f"{reply['text']}\n"
         )
 
     return output.strip()
 
 
-# =========================================================
+# =========================
 # Discord Bot
-# =========================================================
+# =========================
 
-class SuggestReplyBot(
-    commands.Bot
-):
+class SuggestReplyBot(commands.Bot):
 
     def __init__(self):
 
@@ -549,9 +534,9 @@ class SuggestReplyBot(
 bot = SuggestReplyBot()
 
 
-# =========================================================
-# Bot Ready
-# =========================================================
+# =========================
+# Bot 登入
+# =========================
 
 @bot.event
 async def on_ready():
@@ -561,9 +546,9 @@ async def on_ready():
     )
 
 
-# =========================================================
+# =========================
 # /set_key
-# =========================================================
+# =========================
 
 @bot.tree.command(
     name="set_key",
@@ -583,7 +568,6 @@ async def set_key(
             api_key=api_key
         )
 
-        # 驗證 API Key
         models = list(
             client.models.list()
         )
@@ -598,10 +582,7 @@ async def set_key(
                 []
             )
 
-            if (
-                "generateContent"
-                in supported_actions
-            ):
+            if "generateContent" in supported_actions:
 
                 name = getattr(
                     model,
@@ -609,9 +590,7 @@ async def set_key(
                     ""
                 )
 
-                if name.startswith(
-                    "models/"
-                ):
+                if name.startswith("models/"):
 
                     name = name[7:]
 
@@ -650,14 +629,14 @@ async def set_key(
         )
 
         await interaction.response.send_message(
-            f"API Key 無法使用：{e}",
+            "系統忙碌，請稍後再試。",
             ephemeral=True
         )
 
 
-# =========================================================
+# =========================
 # /reply
-# =========================================================
+# =========================
 
 @bot.tree.command(
     name="reply",
@@ -684,8 +663,10 @@ async def reply_command(
 
         return
 
+    # Discord 官方等待動畫
     await interaction.response.defer(
-        ephemeral=True
+        ephemeral=True,
+        thinking=True
     )
 
     try:
@@ -694,48 +675,17 @@ async def reply_command(
             api_key=api_key
         )
 
-        # -----------------------------
-        # UI 1
-        # -----------------------------
-
-        await interaction.edit_original_response(
-            content="""正在分析語氣...
-
-對方狀態
-分析中..."""
-        )
-
         conversation_text = (
             f"對方：{message}"
         )
 
-        # -----------------------------
-        # Gemini 一次完成
-        # -----------------------------
-
-        status, replies = (
-            analyze_and_generate(
-                client,
-                conversation_text,
-                message,
-                False
-            )
+        status, replies = await asyncio.to_thread(
+            analyze_and_generate,
+            client,
+            conversation_text,
+            message,
+            False
         )
-
-        # -----------------------------
-        # UI 2
-        # -----------------------------
-
-        await interaction.edit_original_response(
-            content=f"""對方狀態
-{status}
-
-正在產生回答..."""
-        )
-
-        # -----------------------------
-        # UI 3
-        # -----------------------------
 
         result = format_final_result(
             status,
@@ -753,13 +703,13 @@ async def reply_command(
         )
 
         await interaction.edit_original_response(
-            content=f"發生錯誤：{e}"
+            content="系統忙碌，請稍後再試。"
         )
 
 
-# =========================================================
-# 右鍵 Apps → 建議回覆
-# =========================================================
+# =========================
+# 右鍵訊息 → 建議回覆
+# =========================
 
 @app_commands.context_menu(
     name="建議回覆"
@@ -782,8 +732,10 @@ async def suggest_reply(
 
         return
 
+    # Discord 官方等待動畫
     await interaction.response.defer(
-        ephemeral=True
+        ephemeral=True,
+        thinking=True
     )
 
     try:
@@ -792,59 +744,22 @@ async def suggest_reply(
             api_key=api_key
         )
 
-        # -----------------------------
-        # UI 1
-        # -----------------------------
-
-        await interaction.edit_original_response(
-            content="""正在分析語氣...
-
-對方狀態
-分析中..."""
+        conversation_text, has_user_history = (
+            await get_conversation_for_user(
+                interaction.channel,
+                message,
+                interaction.user.id,
+                limit=10
+            )
         )
 
-        # -----------------------------
-        # 取得聊天紀錄
-        # -----------------------------
-
-        (
-            conversation_text,
-            has_user_history
-        ) = await get_conversation_for_user(
-            interaction.channel,
-            message,
-            interaction.user.id,
-            limit=10
-        )
-
-        # -----------------------------
-        # Gemini 一次完成
-        # -----------------------------
-
-        (
-            status,
-            replies
-        ) = analyze_and_generate(
+        status, replies = await asyncio.to_thread(
+            analyze_and_generate,
             client,
             conversation_text,
             message.content,
             has_user_history
         )
-
-        # -----------------------------
-        # UI 2
-        # -----------------------------
-
-        await interaction.edit_original_response(
-            content=f"""對方狀態
-{status}
-
-正在產生回答..."""
-        )
-
-        # -----------------------------
-        # UI 3
-        # -----------------------------
 
         result = format_final_result(
             status,
@@ -862,26 +777,20 @@ async def suggest_reply(
         )
 
         await interaction.edit_original_response(
-            content=f"發生錯誤：{e}"
+            content="系統忙碌，請稍後再試。"
         )
 
 
-# =========================================================
-# 初始化資料庫
-# =========================================================
+# =========================
+# 啟動
+# =========================
 
 init_db()
-
-
-# =========================================================
-# 啟動
-# =========================================================
 
 if not DISCORD_TOKEN:
 
     raise RuntimeError(
         "找不到 DISCORD_BOT_TOKEN"
     )
-
 
 bot.run(DISCORD_TOKEN)
