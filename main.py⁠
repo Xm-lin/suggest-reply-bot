@@ -1,3 +1,5 @@
+import os
+import sqlite3
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import discord
@@ -5,12 +7,49 @@ from discord import app_commands
 from discord.ext import commands
 from google import genai
 
-from config import PORT, DISCORD_TOKEN
-from database import init_db, save_api_key, get_api_key
-from jev_pipeline import run_jev_two_stage_pipeline
+# =========================================================
+# 環境變數與設定（不再引用 config.py）
+# =========================================================
+PORT = int(os.environ.get("PORT", 10000))
+DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+DB_NAME = "user_keys.db"
 
 # =========================================================
-# Render Port Dummy Server
+# SQLite 資料庫操作
+# =========================================================
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_keys (
+            user_id INTEGER PRIMARY KEY,
+            api_key TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def save_api_key(user_id: int, api_key: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO user_keys (user_id, api_key)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET api_key=excluded.api_key
+    """, (user_id, api_key))
+    conn.commit()
+    conn.close()
+
+def get_api_key(user_id: int) -> str | None:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT api_key FROM user_keys WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+# =========================================================
+# Render Port Dummy Server (防部署休眠)
 # =========================================================
 def run_dummy_server():
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
@@ -64,7 +103,7 @@ async def set_key(interaction: discord.Interaction, api_key: str):
 # =========================================================
 # /reply
 # =========================================================
-@bot.tree.command(name="reply", description="透過 Jev 兩階段分析生成極致自然的接話")
+@bot.tree.command(name="reply", description="生成自然的接話建議")
 @app_commands.describe(prompt="輸入對方說的話或話題")
 async def reply(interaction: discord.Interaction, prompt: str):
     api_key = get_api_key(interaction.user.id)
@@ -75,16 +114,20 @@ async def reply(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        reply_text = run_jev_two_stage_pipeline(api_key, f"對方說：{prompt}")
-        await interaction.followup.send(f"💡 **建議回覆：** {reply_text}", ephemeral=True)
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=f"對方說了這句話：『{prompt}』。請提供一份自然且流暢的回覆建議。"
+        )
+        await interaction.followup.send(f"💡 **建議回覆：**\n{response.text}", ephemeral=True)
     except Exception as e:
         print(f"❌ /reply Gemini 錯誤：{e}")
         await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
 
 # =========================================================
-# 右鍵選單：JARVIS 上下文分析建議回覆
+# 右鍵選單：建議回覆
 # =========================================================
-@bot.tree.context_menu(name="JARVIS建議回覆")
+@bot.tree.context_menu(name="建議回覆")
 async def jarvis_reply_context(interaction: discord.Interaction, message: discord.Message):
     api_key = get_api_key(interaction.user.id)
     if not api_key:
@@ -94,25 +137,17 @@ async def jarvis_reply_context(interaction: discord.Interaction, message: discor
     await interaction.response.defer(ephemeral=True)
 
     try:
-        history_messages = []
-        try:
-            async for msg in interaction.channel.history(limit=6, before=message.created_at, oldest_first=True):
-                if msg.content.strip():
-                    history_messages.append(f"{msg.author.display_name}: {msg.content}")
-        except Exception:
-            pass
-        
-        history_messages.append(f"{message.author.display_name}: {message.content}")
-        chat_context = "\n".join(history_messages)
-
-        reply_text = run_jev_two_stage_pipeline(api_key, chat_context)
-        await interaction.followup.send(f"💡 **建議回覆：** {reply_text}", ephemeral=True)
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=f"對方說了這句話：『{message.content}』。請提供一份自然且流暢的回覆建議。"
+        )
+        await interaction.followup.send(f"💡 **建議回覆：**\n{response.text}", ephemeral=True)
     except Exception as e:
-        print(f"❌ JARVIS 建議回覆錯誤：{e}")
+        print(f"❌ 右鍵選單 Gemini 錯誤：{e}")
         await interaction.followup.send(f"⚠️ 發生錯誤：\n```text\n{str(e)[:1800]}\n```", ephemeral=True)
 
 if __name__ == "__main__":
-    init_db()
     if not DISCORD_TOKEN:
         print("❌ 找不到 DISCORD_BOT_TOKEN 環境變數！")
     else:
