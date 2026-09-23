@@ -301,6 +301,7 @@ def analyze_conversation(
 不要把「我的聊天習慣」或分析結果輸出給使用者。
 不要說明你正在模仿使用者。
 """
+
     else:
 
         style_instruction = """
@@ -602,8 +603,7 @@ async def get_conversation_for_user(
             f"{speaker}：{content}"
         )
 
-    # 把最新訊息也放進上下文，
-    # 但會另外明確告訴 Gemini 它是最新訊息。
+    # 把最新訊息以前的內容作為上下文
     if conversation_lines:
 
         conversation_text = "\n".join(
@@ -660,7 +660,8 @@ async def set_key(
     if not api_key:
 
         await interaction.response.send_message(
-            "API Key 不能是空白。"
+            "API Key 不能是空白。",
+            ephemeral=True
         )
 
         return
@@ -699,7 +700,8 @@ async def set_key(
         if not generate_models:
 
             await interaction.response.send_message(
-                "這個 API Key 沒有可用的 Gemini 文字生成模型。"
+                "這個 API Key 沒有可用的 Gemini 文字生成模型。",
+                ephemeral=True
             )
 
             return
@@ -720,7 +722,8 @@ async def set_key(
 
         await interaction.response.send_message(
             "API Key 已成功驗證並儲存！\n"
-            "現在可以使用 `/reply` 或右鍵訊息 → Apps → 建議回覆。"
+            "現在可以使用 `/reply` 或右鍵訊息 → Apps → 建議回覆。",
+            ephemeral=True
         )
 
     except Exception as e:
@@ -733,7 +736,8 @@ async def set_key(
             "API Key 驗證失敗：\n"
             f"```text\n"
             f"{str(e)[:1500]}"
-            f"\n```"
+            f"\n```",
+            ephemeral=True
         )
 
 
@@ -773,7 +777,8 @@ async def reply(
     if not api_key:
 
         await interaction.response.send_message(
-            "請先使用 `/set_key` 設定你的 Gemini API Key！"
+            "請先使用 `/set_key` 設定你的 Gemini API Key！",
+            ephemeral=True
         )
 
         return
@@ -782,7 +787,9 @@ async def reply(
     # Discord 回應延遲
     # -------------------------
 
-    await interaction.response.defer()
+    await interaction.response.defer(
+        ephemeral=True
+    )
 
     try:
 
@@ -811,7 +818,8 @@ async def reply(
         if not replies:
 
             await interaction.followup.send(
-                "Gemini 沒有產生有效的回覆建議。"
+                "Gemini 沒有產生有效的回覆建議。",
+                ephemeral=True
             )
 
             return
@@ -821,8 +829,10 @@ async def reply(
             replies
         )
 
+        # 僅執行指令的使用者可見
         await interaction.followup.send(
-            result
+            result,
+            ephemeral=True
         )
 
     except json.JSONDecodeError:
@@ -832,7 +842,8 @@ async def reply(
         )
 
         await interaction.followup.send(
-            "Gemini 回傳格式異常，請再試一次。"
+            "Gemini 回傳格式異常，請再試一次。",
+            ephemeral=True
         )
 
     except Exception as e:
@@ -845,7 +856,8 @@ async def reply(
             "發生錯誤：\n"
             f"```text\n"
             f"{str(e)[:1800]}"
-            f"\n```"
+            f"\n```",
+            ephemeral=True
         )
 
 
@@ -881,7 +893,8 @@ async def jarvis_reply_context(
     if not api_key:
 
         await interaction.response.send_message(
-            "請先使用 `/set_key` 設定你的 Gemini API Key！"
+            "請先使用 `/set_key` 設定你的 Gemini API Key！",
+            ephemeral=True
         )
 
         return
@@ -890,7 +903,9 @@ async def jarvis_reply_context(
     # Discord 回應延遲
     # -------------------------
 
-    await interaction.response.defer()
+    await interaction.response.defer(
+        ephemeral=True
+    )
 
     try:
 
@@ -909,7 +924,8 @@ async def jarvis_reply_context(
 
             await interaction.followup.send(
                 "這則訊息沒有文字內容，"
-                "目前無法產生回覆建議。"
+                "目前無法產生回覆建議。",
+                ephemeral=True
             )
 
             return
@@ -950,7 +966,8 @@ async def jarvis_reply_context(
         if not replies:
 
             await interaction.followup.send(
-                "Gemini 沒有產生有效的回覆建議。"
+                "Gemini 沒有產生有效的回覆建議。",
+                ephemeral=True
             )
 
             return
@@ -964,8 +981,10 @@ async def jarvis_reply_context(
             replies
         )
 
+        # 僅執行右鍵操作的使用者可見
         await interaction.followup.send(
-            result
+            result,
+            ephemeral=True
         )
 
     except json.JSONDecodeError:
@@ -975,13 +994,15 @@ async def jarvis_reply_context(
         )
 
         await interaction.followup.send(
-            "Gemini 回傳格式異常，請再試一次。"
+            "Gemini 回傳格式異常，請再試一次。",
+            ephemeral=True
         )
 
     except discord.Forbidden:
 
         await interaction.followup.send(
-            "Bot 沒有權限讀取這個頻道的歷史訊息。"
+            "Bot 沒有權限讀取這個頻道的歷史訊息。",
+            ephemeral=True
         )
 
     except Exception as e:
@@ -994,7 +1015,8 @@ async def jarvis_reply_context(
             "發生錯誤：\n"
             f"```text\n"
             f"{str(e)[:1800]}"
-            f"\n```"
+            f"\n```",
+            ephemeral=True
         )
 
 
