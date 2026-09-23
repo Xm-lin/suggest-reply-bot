@@ -67,11 +67,14 @@ async def set_key(interaction: discord.Interaction, api_key: str):
     save_api_key(interaction.user.id, api_key.strip())
     await interaction.response.send_message("✅ API Key 已成功儲存！", ephemeral=True)
 
-# 呼叫 Gemini 的通用函式
+# 呼叫 Gemini 的通用函式（含自動容錯降級）
 def call_gemini_api(api_key: str, prompt: str) -> str:
     client = genai.Client(api_key=api_key)
-    # 優先使用 API 指定要求的 gemini-3.6-flash
-    for model_name in ["gemini-3.6-flash", "gemini-1.5-flash-8b"]:
+    # 按照官方支援的模型名稱與別名順序嘗試
+    candidate_models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-1.5-flash"]
+    
+    last_exception = None
+    for model_name in candidate_models:
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -81,7 +84,9 @@ def call_gemini_api(api_key: str, prompt: str) -> str:
         except Exception as e:
             last_exception = e
             continue
-    raise last_exception
+            
+    if last_exception:
+        raise last_exception
 
 # 斜線指令 /reply
 @bot.tree.command(name="reply", description="生成 AI 建議回覆")
