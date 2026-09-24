@@ -19,6 +19,7 @@ class APIClientError(Exception):
         message,
         kind="api"
     ):
+
         super().__init__(message)
 
         self.kind = kind
@@ -35,7 +36,9 @@ def normalize_base_url(api_url):
             "url"
         )
 
-    parsed = urlparse(api_url)
+    parsed = urlparse(
+        api_url
+    )
 
     if parsed.scheme not in (
         "http",
@@ -55,7 +58,9 @@ def normalize_base_url(api_url):
             :-len("/chat/completions")
         ]
 
-    if api_url.endswith("/models"):
+    if api_url.endswith(
+        "/models"
+    ):
 
         return api_url[
             :-len("/models")
@@ -123,7 +128,9 @@ def _request(
 
             try:
 
-                return json.loads(raw)
+                return json.loads(
+                    raw
+                )
 
             except json.JSONDecodeError:
 
@@ -133,11 +140,6 @@ def _request(
                 )
 
     except HTTPError as e:
-
-        body = e.read().decode(
-            "utf-8",
-            errors="replace"
-        )
 
         if e.code in (
             401,
@@ -250,13 +252,6 @@ def supports_text_generation(
     item
 ):
 
-    """
-    判斷模型是否支援 generateContent。
-
-    Gemini 官方的 Model API 會提供 supportedActions，
-    Google 官方範例也是透過 generateContent 判斷。
-    """
-
     if not isinstance(
         item,
         dict
@@ -273,8 +268,6 @@ def supports_text_generation(
         )
     )
 
-    # 有提供能力資訊時，
-    # 只保留支援 generateContent 的模型。
     if supported_actions is not None:
 
         if isinstance(
@@ -287,12 +280,6 @@ def supports_text_generation(
                 in supported_actions
             )
 
-    # 某些 OpenAI-compatible API
-    # 不會提供 supportedActions。
-    #
-    # 這種情況不要全部排除，
-    # 否則 OpenAI / OpenRouter / 其他相容 API
-    # 可能會完全沒有模型可以選。
     return True
 
 
@@ -336,12 +323,10 @@ def list_models(
         dict
     ):
 
-        # OpenAI-compatible API
         raw_models = data.get(
             "data"
         )
 
-        # Gemini 原生 Models API
         if raw_models is None:
 
             raw_models = data.get(
@@ -389,13 +374,6 @@ def list_models(
 
             continue
 
-        # Gemini 原生 API 可能回傳：
-        # models/gemini-xxx
-        #
-        # OpenAI-compatible API 通常回傳：
-        # gemini-xxx
-        #
-        # 統一成模型 ID。
         if model_id.startswith(
             "models/"
         ):
@@ -429,11 +407,88 @@ def list_models(
     return models
 
 
+def extract_message_content(
+    message
+):
+
+    if isinstance(
+        message,
+        str
+    ):
+
+        return message
+
+    if not isinstance(
+        message,
+        dict
+    ):
+
+        return None
+
+    content = message.get(
+        "content"
+    )
+
+    if isinstance(
+        content,
+        str
+    ):
+
+        return content
+
+    if isinstance(
+        content,
+        list
+    ):
+
+        text_parts = []
+
+        for part in content:
+
+            if isinstance(
+                part,
+                str
+            ):
+
+                text_parts.append(
+                    part
+                )
+
+            elif isinstance(
+                part,
+                dict
+            ):
+
+                text = part.get(
+                    "text"
+                )
+
+                if isinstance(
+                    text,
+                    str
+                ):
+
+                    text_parts.append(
+                        text
+                    )
+
+        result = "".join(
+            text_parts
+        )
+
+        if result.strip():
+
+            return result
+
+    return None
+
+
 def chat_completion(
     api_url,
     api_key,
     model,
-    messages
+    messages,
+    json_mode=False
 ):
 
     if not model:
@@ -449,6 +504,16 @@ def chat_completion(
         "temperature": 0.7
     }
 
+    # 只有需要 JSON 的功能才要求 JSON。
+    #
+    # 這樣一般 API 仍然可以正常使用，
+    # 不會被強制要求 response_format。
+    if json_mode:
+
+        payload["response_format"] = {
+            "type": "json_object"
+        }
+
     data = _request(
         api_url,
         api_key,
@@ -460,21 +525,49 @@ def chat_completion(
 
     try:
 
-        return data[
+        choices = data.get(
             "choices"
-        ][0][
+        )
+
+        if not isinstance(
+            choices,
+            list
+        ) or not choices:
+
+            raise APIClientError(
+                "模型沒有回傳有效的 choices。",
+                "response"
+            )
+
+        message = choices[0].get(
             "message"
-        ][
-            "content"
-        ]
+        )
+
+        content = extract_message_content(
+            message
+        )
+
+        if content is None:
+
+            raise APIClientError(
+                "模型回覆格式錯誤：找不到文字內容。",
+                "response"
+            )
+
+        return content.strip()
+
+    except APIClientError:
+
+        raise
 
     except (
+        AttributeError,
         KeyError,
         IndexError,
         TypeError
     ):
 
         raise APIClientError(
-            "模型回傳格式無法辨識。",
+            "模型回覆格式錯誤。",
             "response"
         )
