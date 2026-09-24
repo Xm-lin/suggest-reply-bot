@@ -1,5 +1,4 @@
 import json
-
 import re
 
 from urllib.parse import urlparse
@@ -135,11 +134,22 @@ def _request(
             except json.JSONDecodeError:
 
                 raise APIClientError(
-                    "API 回傳的資料格式不是 JSON。",
+                    "API 回傳的資料不是有效 JSON。",
                     "response"
                 )
 
     except HTTPError as e:
+
+        try:
+
+            body = e.read().decode(
+                "utf-8",
+                errors="replace"
+            )
+
+        except Exception:
+
+            body = ""
 
         if e.code in (
             401,
@@ -172,12 +182,82 @@ def _request(
                 "server"
             )
 
+        # 不直接把整個 API 回應丟給使用者，
+        # 避免可能包含不必要的敏感資訊。
+        detail = ""
+
+        try:
+
+            error_data = json.loads(
+                body
+            )
+
+            if isinstance(
+                error_data,
+                dict
+            ):
+
+                error_obj = error_data.get(
+                    "error"
+                )
+
+                if isinstance(
+                    error_obj,
+                    dict
+                ):
+
+                    detail = (
+                        error_obj.get(
+                            "message"
+                        )
+                        or ""
+                    )
+
+                elif isinstance(
+                    error_obj,
+                    str
+                ):
+
+                    detail = error_obj
+
+        except Exception:
+
+            pass
+
+        if detail:
+
+            detail = str(
+                detail
+            ).strip()
+
+            if len(detail) > 300:
+
+                detail = detail[:300] + "..."
+
+            raise APIClientError(
+                f"API 回傳錯誤（HTTP {e.code}）：{detail}",
+                "api"
+            )
+
         raise APIClientError(
             f"API 回傳錯誤（HTTP {e.code}）。",
             "api"
         )
 
-    except URLError:
+    except URLError as e:
+
+        reason = getattr(
+            e,
+            "reason",
+            None
+        )
+
+        if reason:
+
+            raise APIClientError(
+                f"無法連線到 API：{reason}",
+                "connection"
+            )
 
         raise APIClientError(
             "無法連線到 API，請確認 API URL 或服務狀態。",
@@ -189,6 +269,13 @@ def _request(
         raise APIClientError(
             "API 回應逾時，請稍後再試。",
             "timeout"
+        )
+
+    except OSError as e:
+
+        raise APIClientError(
+            f"連線 API 時發生錯誤：{e}",
+            "connection"
         )
 
 
@@ -348,6 +435,16 @@ def list_models(
             "response"
         )
 
+    if not isinstance(
+        raw_models,
+        list
+    ):
+
+        raise APIClientError(
+            "API 回傳的模型清單格式不正確。",
+            "response"
+        )
+
     models = []
 
     for item in raw_models:
@@ -454,7 +551,9 @@ def extract_message_content(
                     part
                 )
 
-            elif isinstance(
+                continue
+
+            if isinstance(
                 part,
                 dict
             ):
@@ -504,15 +603,16 @@ def chat_completion(
         "temperature": 0.7
     }
 
-    # 只有需要 JSON 的功能才要求 JSON。
+    # 暫時不強制 response_format。
     #
-    # 這樣一般 API 仍然可以正常使用，
-    # 不會被強制要求 response_format。
-    if json_mode:
-
-        payload["response_format"] = {
-            "type": "json_object"
-        }
+    # 不同 OpenAI-compatible API 對這個欄位
+    # 的支援程度不同。
+    #
+    # JSON 要求已經由 reply_generator 的 prompt
+    # 控制，後面再由 JSON parser 驗證。
+    #
+    # 保留 json_mode 參數只是避免影響其他檔案。
+    _ = json_mode
 
     data = _request(
         api_url,
@@ -523,51 +623,77 @@ def chat_completion(
         timeout=90
     )
 
-    try:
-
-        choices = data.get(
-            "choices"
-        )
-
-        if not isinstance(
-            choices,
-            list
-        ) or not choices:
-
-            raise APIClientError(
-                "模型沒有回傳有效的 choices。",
-                "response"
-            )
-
-        message = choices[0].get(
-            "message"
-        )
-
-        content = extract_message_content(
-            message
-        )
-
-        if content is None:
-
-            raise APIClientError(
-                "模型回覆格式錯誤：找不到文字內容。",
-                "response"
-            )
-
-        return content.strip()
-
-    except APIClientError:
-
-        raise
-
-    except (
-        AttributeError,
-        KeyError,
-        IndexError,
-        TypeError
+    if not isinstance(
+        data,
+        dict
     ):
 
         raise APIClientError(
-            "模型回覆格式錯誤。",
+            "模型回傳格式錯誤：API 回應不是物件。",
             "response"
         )
+
+    choices = data.get(
+        "choices"
+    )
+
+    if not isinstance(
+        choices,
+        list
+    ) or not choices:
+
+        raise APIClientError(
+            "模型沒有回傳有效的 choices。",
+            "response"
+        )
+
+    first_choice = choices[0]
+
+    if not isinstance(
+        first_choice,
+        dict
+    ):
+
+        raise APIClientError(
+            "模型回傳格式錯誤：choices 格式不正確。",
+            "response"
+        )
+
+    message = first_choice.get(
+        "message"
+    )
+
+    content = extract_message_content(
+        message
+    )
+
+    if content is None:
+
+        # 某些模型可能把內容放在 reasoning
+        # 或其他欄位，但我們不把它當成正常回覆。
+        finish_reason = first_choice.get(
+            "finish_reason"
+        )
+
+        if finish_reason:
+
+            raise APIClientError(
+                f"模型沒有回傳文字內容（finish_reason={finish_reason}）。",
+                "response"
+            )
+
+        raise APIClientError(
+            "模型回覆格式錯誤：找不到文字內容。",
+            "response"
+        )
+
+    content = content.strip()
+
+    if not content:
+
+        raise APIClientError(
+            "模型回傳了空白內容。",
+            "response"
+        )
+
+    return content
