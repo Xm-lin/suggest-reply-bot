@@ -23,7 +23,9 @@ from views import (
 )
 
 
-def user_config_error(config):
+def user_config_error(
+    config
+):
 
     if not config:
 
@@ -52,7 +54,42 @@ def user_config_error(config):
     return None
 
 
-def register_commands(bot):
+def format_unknown_error(
+    action,
+    error
+):
+
+    error_type = type(
+        error
+    ).__name__
+
+    error_text = str(
+        error
+    ).strip()
+
+    if not error_text:
+
+        error_text = (
+            "沒有額外錯誤訊息。"
+        )
+
+    if len(error_text) > 500:
+
+        error_text = (
+            error_text[:500]
+            + "..."
+        )
+
+    return (
+        f"{action}失敗。\n"
+        f"錯誤類型：{error_type}\n"
+        f"錯誤內容：{error_text}"
+    )
+
+
+def register_commands(
+    bot
+):
 
     @bot.tree.command(
         name="set_api",
@@ -142,11 +179,15 @@ def register_commands(bot):
         except Exception as e:
 
             print(
-                f"/set_model 未知錯誤：{e}"
+                f"/set_model 未知錯誤："
+                f"{type(e).__name__}: {e}"
             )
 
             await interaction.edit_original_response(
-                content="取得模型失敗：系統發生未知錯誤，請稍後再試。"
+                content=format_unknown_error(
+                    "取得模型",
+                    e
+                )
             )
 
 
@@ -214,6 +255,11 @@ def register_commands(bot):
 
         except APIClientError as e:
 
+            print(
+                f"/reply API 錯誤："
+                f"{e.kind}: {e}"
+            )
+
             await interaction.edit_original_response(
                 content=f"模型使用失敗：{e}"
             )
@@ -221,11 +267,15 @@ def register_commands(bot):
         except Exception as e:
 
             print(
-                f"/reply 未知錯誤：{e}"
+                f"/reply 未知錯誤："
+                f"{type(e).__name__}: {e}"
             )
 
             await interaction.edit_original_response(
-                content="模型使用失敗：系統發生未知錯誤，請稍後再試。"
+                content=format_unknown_error(
+                    "模型使用",
+                    e
+                )
             )
 
 
@@ -303,6 +353,11 @@ def register_commands(bot):
 
         except APIClientError as e:
 
+            print(
+                f"建議回覆 API 錯誤："
+                f"{e.kind}: {e}"
+            )
+
             await interaction.edit_original_response(
                 content=f"模型使用失敗：{e}"
             )
@@ -310,9 +365,13 @@ def register_commands(bot):
         except Exception as e:
 
             print(
-                f"建議回覆未知錯誤：{e}"
+                f"建議回覆未知錯誤："
+                f"{type(e).__name__}: {e}"
             )
 
             await interaction.edit_original_response(
-                content="建議回覆失敗：系統發生未知錯誤，請稍後再試。"
+                content=format_unknown_error(
+                    "建議回覆",
+                    e
+                )
             )
