@@ -29,6 +29,7 @@ def normalize_base_url(api_url):
     api_url = api_url.strip().rstrip("/")
 
     if not api_url:
+
         raise APIClientError(
             "API URL 不可為空。",
             "url"
@@ -49,11 +50,13 @@ def normalize_base_url(api_url):
     if api_url.endswith(
         "/chat/completions"
     ):
+
         return api_url[
             :-len("/chat/completions")
         ]
 
     if api_url.endswith("/models"):
+
         return api_url[
             :-len("/models")
         ]
@@ -82,6 +85,7 @@ def _request(
     }
 
     if api_key:
+
         headers["Authorization"] = (
             f"Bearer {api_key}"
         )
@@ -186,9 +190,13 @@ def _request(
         )
 
 
-def natural_sort_key(value):
+def natural_sort_key(
+    value
+):
 
-    value = str(value).lower()
+    value = str(
+        value
+    ).lower()
 
     parts = re.split(
         r"(\d+(?:\.\d+)?)",
@@ -200,6 +208,7 @@ def natural_sort_key(value):
     for part in parts:
 
         if not part:
+
             continue
 
         if re.fullmatch(
@@ -237,6 +246,80 @@ def natural_sort_key(value):
     return key
 
 
+def supports_text_generation(
+    item
+):
+
+    """
+    判斷模型是否支援 generateContent。
+
+    Gemini 官方的 Model API 會提供 supportedActions，
+    Google 官方範例也是透過 generateContent 判斷。
+    """
+
+    if not isinstance(
+        item,
+        dict
+    ):
+
+        return True
+
+    supported_actions = (
+        item.get(
+            "supportedActions"
+        )
+        or item.get(
+            "supported_actions"
+        )
+    )
+
+    # 有提供能力資訊時，
+    # 只保留支援 generateContent 的模型。
+    if supported_actions is not None:
+
+        if isinstance(
+            supported_actions,
+            list
+        ):
+
+            return (
+                "generateContent"
+                in supported_actions
+            )
+
+    # 某些 OpenAI-compatible API
+    # 不會提供 supportedActions。
+    #
+    # 這種情況不要全部排除，
+    # 否則 OpenAI / OpenRouter / 其他相容 API
+    # 可能會完全沒有模型可以選。
+    return True
+
+
+def get_model_id(
+    item
+):
+
+    if isinstance(
+        item,
+        str
+    ):
+
+        return item
+
+    if isinstance(
+        item,
+        dict
+    ):
+
+        return (
+            item.get("id")
+            or item.get("name")
+        )
+
+    return None
+
+
 def list_models(
     api_url,
     api_key
@@ -248,14 +331,28 @@ def list_models(
         "models"
     )
 
-    if isinstance(data, dict):
+    if isinstance(
+        data,
+        dict
+    ):
 
+        # OpenAI-compatible API
         raw_models = data.get(
-            "data",
-            []
+            "data"
         )
 
-    elif isinstance(data, list):
+        # Gemini 原生 Models API
+        if raw_models is None:
+
+            raw_models = data.get(
+                "models",
+                []
+            )
+
+    elif isinstance(
+        data,
+        list
+    ):
 
         raw_models = data
 
@@ -270,29 +367,51 @@ def list_models(
 
     for item in raw_models:
 
-        if isinstance(item, str):
+        model_id = get_model_id(
+            item
+        )
 
-            model_id = item
+        if not model_id:
 
-        elif isinstance(item, dict):
+            continue
 
-            model_id = (
-                item.get("id")
-                or item.get("name")
-            )
+        if not supports_text_generation(
+            item
+        ):
 
-        else:
+            continue
 
-            model_id = None
+        model_id = str(
+            model_id
+        ).strip()
 
-        if model_id:
+        if not model_id:
 
-            models.append(
-                str(model_id)
-            )
+            continue
+
+        # Gemini 原生 API 可能回傳：
+        # models/gemini-xxx
+        #
+        # OpenAI-compatible API 通常回傳：
+        # gemini-xxx
+        #
+        # 統一成模型 ID。
+        if model_id.startswith(
+            "models/"
+        ):
+
+            model_id = model_id[
+                len("models/"):
+            ]
+
+        models.append(
+            model_id
+        )
 
     models = list(
-        set(models)
+        set(
+            models
+        )
     )
 
     models.sort(
