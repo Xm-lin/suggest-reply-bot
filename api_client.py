@@ -1,5 +1,7 @@
 import json
 
+import re
+
 from urllib.parse import urlparse
 
 from urllib.request import Request, urlopen
@@ -184,6 +186,57 @@ def _request(
         )
 
 
+def natural_sort_key(value):
+
+    value = str(value).lower()
+
+    parts = re.split(
+        r"(\d+(?:\.\d+)?)",
+        value
+    )
+
+    key = []
+
+    for part in parts:
+
+        if not part:
+            continue
+
+        if re.fullmatch(
+            r"\d+(?:\.\d+)?",
+            part
+        ):
+
+            try:
+
+                key.append(
+                    (
+                        1,
+                        float(part)
+                    )
+                )
+
+            except ValueError:
+
+                key.append(
+                    (
+                        0,
+                        part
+                    )
+                )
+
+        else:
+
+            key.append(
+                (
+                    0,
+                    part
+                )
+            )
+
+    return key
+
+
 def list_models(
     api_url,
     api_key
@@ -238,9 +291,13 @@ def list_models(
                 str(model_id)
             )
 
-    models = sorted(
-        set(models),
-        key=str.lower
+    models = list(
+        set(models)
+    )
+
+    models.sort(
+        key=natural_sort_key,
+        reverse=True
     )
 
     if not models:
