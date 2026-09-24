@@ -10,8 +10,7 @@ from api_client import (
 )
 
 from database import (
-    get_api_config,
-    save_model
+    get_api_config
 )
 
 from reply_generator import (
@@ -51,79 +50,6 @@ def user_config_error(config):
         )
 
     return None
-
-
-async def get_conversation_for_user(
-    channel,
-    target_message,
-    user_id,
-    limit=10
-):
-
-    messages = []
-
-    try:
-
-        async for message in channel.history(
-            before=target_message,
-            limit=limit
-        ):
-
-            if not message.content.strip():
-
-                continue
-
-            if message.author.id == user_id:
-
-                speaker = "我"
-
-            elif (
-                message.author.id
-                == target_message.author.id
-            ):
-
-                speaker = "對方"
-
-            else:
-
-                speaker = "其他人"
-
-            messages.append(
-                f"{speaker}：{message.content}"
-            )
-
-    except discord.Forbidden:
-
-        raise RuntimeError(
-            "無法讀取聊天紀錄，請確認 Bot 有查看頻道與讀取訊息的權限。"
-        )
-
-    except discord.HTTPException:
-
-        raise RuntimeError(
-            "聊天紀錄讀取失敗，請稍後再試。"
-        )
-
-    messages.reverse()
-
-    messages.append(
-        f"對方：{target_message.content}"
-    )
-
-    conversation_text = "\n".join(
-        messages
-    )
-
-    user_reply_count = sum(
-        1
-        for message in messages
-        if message.startswith("我：")
-    )
-
-    return (
-        conversation_text,
-        user_reply_count >= 2
-    )
 
 
 def register_commands(bot):
@@ -344,14 +270,18 @@ def register_commands(bot):
 
         try:
 
-            (
-                conversation_text,
-                has_user_history
-            ) = await get_conversation_for_user(
-                interaction.channel,
-                message,
-                interaction.user.id,
-                limit=10
+            message_content = message.content.strip()
+
+            if not message_content:
+
+                await interaction.edit_original_response(
+                    content="這則訊息沒有可分析的文字內容。"
+                )
+
+                return
+
+            conversation_text = (
+                f"對方：{message_content}"
             )
 
             status, replies = await asyncio.to_thread(
@@ -360,8 +290,8 @@ def register_commands(bot):
                 config["api_key"],
                 config["model"],
                 conversation_text,
-                message.content,
-                has_user_history
+                message_content,
+                False
             )
 
             await interaction.edit_original_response(
@@ -375,12 +305,6 @@ def register_commands(bot):
 
             await interaction.edit_original_response(
                 content=f"模型使用失敗：{e}"
-            )
-
-        except RuntimeError as e:
-
-            await interaction.edit_original_response(
-                content=f"聊天紀錄失敗：{e}"
             )
 
         except Exception as e:
