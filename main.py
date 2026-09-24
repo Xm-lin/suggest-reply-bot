@@ -88,7 +88,23 @@ class SuggestReplyBot(
 
         super().__init__(
             command_prefix="!",
-            intents=intents
+            intents=intents,
+
+            # 同時允許：
+            # 1. 安裝到伺服器
+            # 2. 安裝到使用者帳號
+            allowed_installs=discord.app_commands.AppInstallationType(
+                guild=True,
+                user=True
+            ),
+
+            # 允許 Application Commands
+            # 出現在伺服器、DM、私人頻道
+            allowed_contexts=discord.app_commands.AppCommandContext(
+                guild=True,
+                dm_channel=True,
+                private_channel=True
+            )
         )
 
     async def setup_hook(self):
