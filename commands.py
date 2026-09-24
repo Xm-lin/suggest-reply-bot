@@ -70,6 +70,7 @@ async def get_conversation_for_user(
         ):
 
             if not message.content.strip():
+
                 continue
 
             if message.author.id == user_id:
@@ -131,6 +132,15 @@ def register_commands(bot):
         name="set_api",
         description="設定你的 API URL 與 API Key"
     )
+    @app_commands.allowed_installs(
+        guilds=True,
+        users=True
+    )
+    @app_commands.allowed_contexts(
+        guilds=True,
+        dms=True,
+        private_channels=True
+    )
     async def set_api(
         interaction: discord.Interaction
     ):
@@ -143,6 +153,15 @@ def register_commands(bot):
     @bot.tree.command(
         name="set_model",
         description="重新取得並選擇模型"
+    )
+    @app_commands.allowed_installs(
+        guilds=True,
+        users=True
+    )
+    @app_commands.allowed_contexts(
+        guilds=True,
+        dms=True,
+        private_channels=True
     )
     async def set_model(
         interaction: discord.Interaction
@@ -208,6 +227,15 @@ def register_commands(bot):
     @bot.tree.command(
         name="reply",
         description="分析訊息並產生建議回覆"
+    )
+    @app_commands.allowed_installs(
+        guilds=True,
+        users=True
+    )
+    @app_commands.allowed_contexts(
+        guilds=True,
+        dms=True,
+        private_channels=True
     )
     @app_commands.describe(
         message="對方傳給你的訊息"
@@ -277,6 +305,15 @@ def register_commands(bot):
 
     @app_commands.context_menu(
         name="建議回覆"
+    )
+    @app_commands.allowed_installs(
+        guilds=True,
+        users=True
+    )
+    @app_commands.allowed_contexts(
+        guilds=True,
+        dms=True,
+        private_channels=True
     )
     async def suggest_reply(
         interaction: discord.Interaction,
