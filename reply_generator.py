@@ -31,7 +31,6 @@ def parse_model_json(
             "response"
         )
 
-    # 先嘗試直接解析 JSON
     try:
 
         data = json.loads(
@@ -52,7 +51,6 @@ def parse_model_json(
 
         pass
 
-    # 移除 Markdown code fence
     cleaned = re.sub(
         r"```(?:json)?\s*",
         "",
@@ -66,7 +64,6 @@ def parse_model_json(
         cleaned
     ).strip()
 
-    # 再嘗試一次
     try:
 
         data = json.loads(
@@ -87,8 +84,6 @@ def parse_model_json(
 
         pass
 
-    # 如果前面還有其他文字，
-    # 從第一個 { 開始解析 JSON object。
     start = cleaned.find(
         "{"
     )
@@ -214,23 +209,23 @@ def analyze_and_generate(
 請只輸出 JSON。
 JSON 必須符合以下結構：
 
-{
+{{
     "status": "一句簡短的對方狀態描述",
     "replies": [
-        {
+        {{
             "style": "自然",
             "text": "..."
-        },
-        {
+        }},
+        {{
             "style": "關心",
             "text": "..."
-        },
-        {
+        }},
+        {{
             "style": "延續話題",
             "text": "..."
-        }
+        }}
     ]
-}
+}}
 """
 
     text = chat_completion(
