@@ -1,60 +1,124 @@
 import json
 
+import re
+
 from api_client import (
     APIClientError,
     chat_completion
 )
 
 
-def parse_model_json(text):
+def parse_model_json(
+    text
+):
+
+    if not isinstance(
+        text,
+        str
+    ):
+
+        raise APIClientError(
+            "模型沒有回傳文字內容。",
+            "response"
+        )
 
     text = text.strip()
 
-    if text.startswith("```"):
+    if not text:
 
-        lines = text.splitlines()
+        raise APIClientError(
+            "模型沒有回傳內容。",
+            "response"
+        )
 
-        if lines:
-            lines = lines[1:]
-
-        if (
-            lines
-            and lines[-1].strip() == "```"
-        ):
-            lines = lines[:-1]
-
-        text = "\n".join(
-            lines
-        ).strip()
-
+    # 先嘗試直接解析 JSON
     try:
 
-        return json.loads(text)
+        data = json.loads(
+            text
+        )
 
-    except Exception:
+        if isinstance(
+            data,
+            dict
+        ):
+
+            return data
+
+    except (
+        json.JSONDecodeError,
+        TypeError
+    ):
+
         pass
 
-    start = text.find("{")
-    end = text.rfind("}")
+    # 移除 Markdown code fence
+    cleaned = re.sub(
+        r"```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
 
-    if (
-        start != -1
-        and end > start
+    cleaned = re.sub(
+        r"\s*```",
+        "",
+        cleaned
+    ).strip()
+
+    # 再嘗試一次
+    try:
+
+        data = json.loads(
+            cleaned
+        )
+
+        if isinstance(
+            data,
+            dict
+        ):
+
+            return data
+
+    except (
+        json.JSONDecodeError,
+        TypeError
     ):
+
+        pass
+
+    # 如果前面還有其他文字，
+    # 從第一個 { 開始解析 JSON object。
+    start = cleaned.find(
+        "{"
+    )
+
+    if start != -1:
+
+        decoder = json.JSONDecoder()
 
         try:
 
-            return json.loads(
-                text[
-                    start:end + 1
-                ]
+            data, _ = decoder.raw_decode(
+                cleaned[start:]
             )
 
-        except Exception:
+            if isinstance(
+                data,
+                dict
+            ):
+
+                return data
+
+        except (
+            json.JSONDecodeError,
+            TypeError
+        ):
+
             pass
 
     raise APIClientError(
-        "模型回覆格式錯誤，請稍後再試。",
+        "模型回覆格式錯誤，無法解析為 JSON。",
         "response"
     )
 
@@ -147,25 +211,26 @@ def analyze_and_generate(
 - 直接可以貼到 Discord
 - 不要輸出分析過程
 
-請只輸出合法 JSON：
+請只輸出 JSON。
+JSON 必須符合以下結構：
 
-{{
+{
     "status": "一句簡短的對方狀態描述",
     "replies": [
-        {{
+        {
             "style": "自然",
             "text": "..."
-        }},
-        {{
+        },
+        {
             "style": "關心",
             "text": "..."
-        }},
-        {{
+        },
+        {
             "style": "延續話題",
             "text": "..."
-        }}
+        }
     ]
-}}
+}
 """
 
     text = chat_completion(
@@ -177,7 +242,8 @@ def analyze_and_generate(
                 "role": "user",
                 "content": prompt
             }
-        ]
+        ],
+        json_mode=True
     )
 
     data = parse_model_json(
@@ -210,7 +276,7 @@ def analyze_and_generate(
     ):
 
         raise APIClientError(
-            "模型回覆格式錯誤，請稍後再試。",
+            "模型回覆格式錯誤：replies 不是列表。",
             "response"
         )
 
@@ -220,6 +286,7 @@ def analyze_and_generate(
             item,
             dict
         ):
+
             continue
 
         style = str(
