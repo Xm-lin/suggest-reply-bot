@@ -1,5 +1,9 @@
 # Discord Suggest Reply Bot - Discord建議回復機器人
 
+| 🔗 **下載連結：** |
+|:---|
+|  [點擊這裡邀請 Discord Bot](https://discord.com/oauth2/authorize?client_id=1552234169759694848) |
+
 支援 OpenAI-compatible API。
 
 🔒 **所有指令的互動訊息皆僅有使用者本人可見，不會顯示給其他 Discord 使用者。**
